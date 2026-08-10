@@ -329,3 +329,52 @@ label.checkbox input {
   color: var(--muted);
   font-size: 0.875rem;
 }
+
+/* ------------------------------------------------------ structure tree */
+
+ul.tree {
+  margin: 0.5rem 0 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 0.925rem;
+}
+
+ul.tree ul.tree {
+  margin-top: 0.15rem;
+  /* The guide line is what makes depth readable at a glance. */
+  margin-left: 0.45rem;
+  padding-left: 0.9rem;
+  border-left: 1px solid var(--border);
+}
+
+ul.tree li {
+  margin: 0.15rem 0;
+}
+
+ul.tree li.new > .name {
+  font-weight: 600;
+  color: #1f7a43;
+}
+
+@media (prefers-color-scheme: dark) {
+  ul.tree li.new > .name {
+    color: #5cc98a;
+  }
+}
+
+ul.tree .tag.new {
+  color: #1f7a43;
+  border-color: currentColor;
+}
+
+@media (prefers-color-scheme: dark) {
+  ul.tree .tag.new {
+    color: #5cc98a;
+  }
+}
+
+ul.tree li.hidden-children {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-style: italic;
+}

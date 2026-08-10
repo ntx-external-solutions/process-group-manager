@@ -27,7 +27,7 @@ import {
   loadWholeTree,
   resolveShortcutTargets,
 } from '@/lib/plan/orchestrate.ts';
-import { datedFilename, downloadCsv } from '@/lib/ui/download.ts';
+import { datedFilename, downloadCsv, downloadText } from '@/lib/ui/download.ts';
 import {
   browserGateway,
   currentSession,
@@ -44,6 +44,11 @@ import {
   type GroupPreview,
   type ShortcutPreview,
 } from '@/lib/ui/preview.ts';
+import {
+  buildStructurePreview,
+  structureToText,
+  type StructurePreview,
+} from '@/lib/ui/structure.ts';
 import { GroupPreviewView, IssueList, plural, ShortcutPreviewView } from './parts.tsx';
 
 type Task = 'groups' | 'shortcuts';
@@ -67,6 +72,7 @@ export default function PlanPage() {
   const [unreadable, setUnreadable] = useState<CsvIssue[]>([]);
 
   const [groupPreview, setGroupPreview] = useState<GroupPreview | null>(null);
+  const [structure, setStructure] = useState<StructurePreview | null>(null);
   const [shortcutPreview, setShortcutPreview] = useState<ShortcutPreview | null>(null);
   const [clearsAcknowledged, setClearsAcknowledged] = useState(false);
 
@@ -86,6 +92,7 @@ export default function PlanPage() {
     setIssues(null);
     setUnreadable([]);
     setGroupPreview(null);
+    setStructure(null);
     setShortcutPreview(null);
     setClearsAcknowledged(false);
   }
@@ -187,10 +194,13 @@ export default function PlanPage() {
     if (parsed.errors.length > 0) return;
 
     setBusy('Checking which groups already exist…');
-    const { plan } = await buildGroupPlan(browserGateway(), parsed.rows, (event) =>
+    const { plan, tree } = await buildGroupPlan(browserGateway(), parsed.rows, (event) =>
       setBusy(`Checking which groups already exist… ${event.done} levels`),
     );
     setGroupPreview(buildGroupPreview(plan));
+    // The tree is what makes "what will this look like" answerable; the plan alone
+    // only knows the paths, not what already sits beside them.
+    setStructure(buildStructurePreview(tree, plan));
   }
 
   async function planShortcuts(text: string) {
@@ -397,7 +407,7 @@ export default function PlanPage() {
       {groupPreview !== null && (
         <>
           <h2 className="section">What would happen</h2>
-          <GroupPreviewView preview={groupPreview} />
+          <GroupPreviewView preview={groupPreview} structure={structure} />
         </>
       )}
 
@@ -430,6 +440,21 @@ export default function PlanPage() {
             >
               Download this plan
             </button>
+            {structure !== null && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  downloadText(
+                    datedFilename('group-structure-preview').replace(/\.csv$/, '.txt'),
+                    structureToText(structure),
+                    'text/plain;charset=utf-8',
+                  )
+                }
+              >
+                Download the structure
+              </button>
+            )}
           </div>
 
           {needsClearAck && (
