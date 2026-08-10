@@ -428,6 +428,23 @@ Five screens, deliberately linear:
 Non-negotiable: **nothing writes before the preview is shown.** There is no
 "upload and go" path.
 
+Screens 1–4 are built (`/signin`, `/plan`). Screens 2–4 are one page rather than
+three: the plan lives in browser memory and cannot survive a navigation, so splitting
+them would mean either re-planning on every step or persisting customer data
+somewhere. Both are worse than scrolling.
+
+Two decisions that only became obvious once the screens existed:
+
+- **The file kind is detected, not asked for.** Uploading Process Manager's Process
+  List export into the shortcuts task converts it and hands back an editable file,
+  rather than rejecting it — that export is the recommended starting point (§4.5), so
+  arriving with one is the expected case, not a mistake. Uploading a group file into
+  the shortcuts task, or vice versa, is named as such instead of failing deep in a
+  parser. See `lib/csv/detect.ts`.
+- **The preview is downloadable.** At tenant scale a plan runs to thousands of rows,
+  and a page that renders them all is not reviewable. On-screen rows are capped; the
+  CSV is the review surface, and the thing you send to whoever has to approve it.
+
 ---
 
 ## 9. Module layout
@@ -487,6 +504,11 @@ in a route handler, and in the browser.
 | 4 | Proxy routes + auth | Deployable to Vercel |
 | 5 | Executor + journal + resume | Safe at 1,518 scale |
 | 6 | UI + report | Hands it to a non-technical operator |
+
+Milestones 1–4 and the dry-run half of 6 are done. Milestone 3's "point at the live
+tenant, see a real diff" now happens in the browser rather than a CLI, which is the
+same proof with one fewer thing to build. Everything shipped so far reads; nothing in
+the codebase writes to a tenant.
 
 Milestone 3 is worth reaching fastest — a trustworthy read-only diff against real data
 is what tells us the CSV grammar and matching rules survive contact with names like

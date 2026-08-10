@@ -13,7 +13,7 @@ import type { PmContext } from './client.ts';
 import { createGroup, getChildGroups, renameGroup, validateGroupAction } from './groups.ts';
 import {
   buildUpdateEnvelope,
-  currentShortcutIds,
+  currentShortcuts,
   getLatestRevision,
   publishProcess,
   updateProcess,
@@ -249,12 +249,12 @@ test('unrelated process fields survive a shortcut edit', () => {
   assert.equal(updated.Version, '2.0');
 });
 
-test('currentShortcutIds treats null and empty alike', () => {
-  assert.deepEqual(currentShortcutIds(processFixture()), []);
+test('currentShortcuts treats null and empty alike', () => {
+  assert.deepEqual(currentShortcuts(processFixture()), []);
 
   const withTwo = withShortcuts(processFixture(), [
     { Id: 770, UniqueId: 'a', Name: 'A' },
     { Id: 222, UniqueId: 'b', Name: 'B' },
   ]);
-  assert.deepEqual(currentShortcutIds(withTwo), ['a', 'b']);
+  assert.deepEqual(currentShortcuts(withTwo).map((s) => s.UniqueId), ['a', 'b']);
 });

@@ -180,7 +180,7 @@ test('process.summary returns only what the planner needs', async () => {
     processUniqueId: PROCESS,
   })) as ProcessSummary;
 
-  assert.deepEqual(summary.currentShortcutIds, ['sc-1']);
+  assert.deepEqual(summary.currentShortcuts, [{ Id: 770, UniqueId: 'sc-1', Name: 'My Group' }]);
   assert.equal(summary.revisionStateId, 3);
   assert.equal(summary.canPublishAfterEdit, false);
   assert.equal(summary.canSubmitForApprovalAfterEdit, true);

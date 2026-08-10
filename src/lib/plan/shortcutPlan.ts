@@ -8,7 +8,7 @@
 
 import type { CsvIssue } from '../csv/groups.ts';
 import type { ShortcutCsvRow } from '../csv/shortcuts.ts';
-import type { ProcessActions, ProcessRevisionStateId } from '../pm/types.ts';
+import type { ProcessActions, ProcessGroupRef, ProcessRevisionStateId } from '../pm/types.ts';
 
 /** A group that shortcuts can point at. */
 export interface ResolvedGroup {
@@ -27,8 +27,8 @@ export interface ProcessSnapshot {
   version: string;
   revisionEditId: number;
   revisionStateId: ProcessRevisionStateId;
-  /** Group uniqueIds currently set as shortcuts. */
-  currentShortcutIds: string[];
+  /** Groups currently set as shortcuts. Named, so a preview can be read. */
+  currentShortcuts: ProcessGroupRef[];
   actions: ProcessActions;
   canEdit: boolean;
 }
@@ -64,7 +64,7 @@ export interface ShortcutChange {
   revisionEditId: number;
   /** Desired final shortcut set. Empty for a clear. */
   desired: ResolvedGroup[];
-  currentShortcutIds: string[];
+  currentShortcuts: ProcessGroupRef[];
   writePath: WritePath;
 }
 
@@ -154,7 +154,7 @@ export function planShortcuts(
     const desired = resolveTargets(row, deps, plan, label);
     if (desired === null) continue;
 
-    if (setsMatch(snapshot.currentShortcutIds, desired)) {
+    if (setsMatch(snapshot.currentShortcuts, desired)) {
       plan.unchanged.push({
         line: row.line,
         processUniqueId: snapshot.uniqueId,
@@ -182,7 +182,7 @@ export function planShortcuts(
       version: snapshot.version,
       revisionEditId: snapshot.revisionEditId,
       desired,
-      currentShortcutIds: snapshot.currentShortcutIds,
+      currentShortcuts: snapshot.currentShortcuts,
       writePath,
     };
 
@@ -227,10 +227,13 @@ function resolveTargets(
  * Groups that do not exist yet can never match current state, so a plan containing
  * one is always a change.
  */
-function setsMatch(currentIds: readonly string[], desired: readonly ResolvedGroup[]): boolean {
+function setsMatch(
+  currentShortcuts: readonly ProcessGroupRef[],
+  desired: readonly ResolvedGroup[],
+): boolean {
   if (desired.some((g) => g.uniqueId === null)) return false;
-  if (currentIds.length !== desired.length) return false;
-  const current = new Set(currentIds);
+  if (currentShortcuts.length !== desired.length) return false;
+  const current = new Set(currentShortcuts.map((s) => s.UniqueId));
   return desired.every((g) => current.has(g.uniqueId as string));
 }
 

@@ -43,6 +43,65 @@ export interface GroupPlanResult {
   tree: GroupTree;
 }
 
+/** Just the top level — the starting point for any resolution. */
+export async function loadRootTree(gateway: PlanGateway): Promise<GroupTree> {
+  const tree = emptyTree();
+  const root = await gateway.groupsTree(null);
+  addLevel(tree, null, root.treeItems ?? []);
+  return tree;
+}
+
+/**
+ * Load the entire group tree, breadth-first.
+ *
+ * Only used to export the current structure, where there is no CSV to say which
+ * branches matter. Everything else loads on demand, because this is one request per
+ * group — around 92 on the measured tenant, and unbounded on a larger one, hence the
+ * cap.
+ */
+export async function loadWholeTree(
+  gateway: PlanGateway,
+  options: { onProgress?: Progress; concurrency?: number; maxGroups?: number } = {},
+): Promise<GroupTree> {
+  const concurrency = Math.max(1, options.concurrency ?? 6);
+  const maxGroups = options.maxGroups ?? 5_000;
+
+  const tree = await loadRootTree(gateway);
+  let frontier = [...tree.roots];
+  let loaded = 0;
+
+  while (frontier.length > 0) {
+    loaded += frontier.length;
+    if (loaded > maxGroups) {
+      throw new Error(
+        `This tenant has more than ${maxGroups.toLocaleString()} groups, which is more ` +
+          `than this export can hold. Build your file from the part of the tree you need.`,
+      );
+    }
+
+    const next: typeof frontier = [];
+    for (let i = 0; i < frontier.length; i += concurrency) {
+      const batch = frontier.slice(i, i + concurrency);
+      const levels = await Promise.all(
+        batch.map(async (node) => ({
+          uniqueId: node.uniqueId,
+          response: await gateway.groupsTree(node.uniqueId),
+        })),
+      );
+      for (const level of levels) {
+        addLevel(tree, level.uniqueId, level.response.treeItems ?? []);
+        const parent = tree.byUniqueId.get(level.uniqueId);
+        if (parent) next.push(...parent.children);
+      }
+      options.onProgress?.({ phase: 'tree', done: loaded, total: null });
+    }
+
+    frontier = next;
+  }
+
+  return tree;
+}
+
 /**
  * Load only the parts of the tree the CSV actually refers to, then plan.
  *
@@ -54,9 +113,7 @@ export async function buildGroupPlan(
   rows: readonly GroupCsvRow[],
   onProgress?: Progress,
 ): Promise<GroupPlanResult> {
-  const tree = emptyTree();
-  const root = await gateway.groupsTree(null);
-  addLevel(tree, null, root.treeItems ?? []);
+  const tree = await loadRootTree(gateway);
 
   let loaded = 1;
 
@@ -224,7 +281,7 @@ export async function buildShortcutPlan(
           version: summary.version,
           revisionEditId: summary.revisionEditId,
           revisionStateId: summary.revisionStateId,
-          currentShortcutIds: summary.currentShortcutIds,
+          currentShortcuts: summary.currentShortcuts,
           canEdit: summary.canEdit,
           actions: {
             CanPublish: false,

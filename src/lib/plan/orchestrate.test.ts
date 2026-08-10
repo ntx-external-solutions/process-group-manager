@@ -58,7 +58,7 @@ function summary(over: Partial<ProcessSummary> = {}): ProcessSummary {
     revisionStateId: 3,
     homeGroupUniqueId: 'home',
     homeGroupName: 'Home',
-    currentShortcutIds: [],
+    currentShortcuts: [],
     canEdit: true,
     canSave: true,
     canPublishAfterEdit: true,
