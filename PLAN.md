@@ -444,6 +444,13 @@ Two decisions that only became obvious once the screens existed:
 - **The preview is downloadable.** At tenant scale a plan runs to thousands of rows,
   and a page that renders them all is not reviewable. On-screen rows are capped; the
   CSV is the review surface, and the thing you send to whoever has to approve it.
+- **The group task previews the resulting tree, not just the create list.** A list of
+  paths cannot show that a missing `|` turned a child into a second top-level group,
+  which is the mistake this file format invites. The tree is scoped to the branches the
+  file touches plus one level of existing siblings — enough to see where a new group
+  lands, without burying four additions in ninety untouched groups. Where the tree was
+  never loaded that deep, it says so rather than drawing an empty group.
+  See `lib/ui/structure.ts`.
 
 ---
 

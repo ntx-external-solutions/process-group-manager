@@ -11,6 +11,7 @@
 
 import type { CsvIssue } from '@/lib/csv/groups.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
+import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
 
 /** Rows rendered on screen before deferring to the downloadable CSV. */
 export const MAX_ROWS = 200;
@@ -73,9 +74,51 @@ function Truncated({ shown, total }: { shown: number; total: number }) {
   );
 }
 
+// ------------------------------------------------------- group structure
+
+function StructureBranch({ nodes }: { nodes: readonly StructureNode[] }) {
+  return (
+    <ul className="tree">
+      {nodes.map((node) => (
+        <li key={node.key} className={node.status === 'new' ? 'new' : ''}>
+          <span className="name">{node.name}</span>
+          {node.status === 'new' && <span className="tag new">new</span>}
+          {node.isDocumentGroup && <span className="tag">documents only</span>}
+          {node.children.length > 0 && <StructureBranch nodes={node.children} />}
+          {node.hasHiddenChildren && (
+            // Never draw a group as empty when we simply did not look inside it.
+            <ul className="tree">
+              <li className="hidden-children">existing subgroups, not shown</li>
+            </ul>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function StructureView({ preview }: { preview: StructurePreview }) {
+  return (
+    <div className="panel">
+      <h2>Structure afterwards</h2>
+      <p>
+        Your file&rsquo;s branches, with everything already in place around them. New
+        groups are added at the end of their level — this run never reorders anything.
+      </p>
+      <StructureBranch nodes={preview.roots} />
+    </div>
+  );
+}
+
 // ------------------------------------------------------------ group plan
 
-export function GroupPreviewView({ preview }: { preview: GroupPreview }) {
+export function GroupPreviewView({
+  preview,
+  structure,
+}: {
+  preview: GroupPreview;
+  structure: StructurePreview | null;
+}) {
   return (
     <>
       <Counts
@@ -85,6 +128,8 @@ export function GroupPreviewView({ preview }: { preview: GroupPreview }) {
           { label: 'blocked', value: preview.blocked.length },
         ]}
       />
+
+      {structure !== null && <StructureView preview={structure} />}
 
       {preview.isNoOp && (
         <div className="panel">

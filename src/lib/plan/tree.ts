@@ -17,6 +17,11 @@ export interface GroupNode {
   parentUniqueId: string | null;
   isDocumentGroup: boolean;
   childrenLoaded: boolean;
+  /**
+   * What the server said about children, before any were fetched. Lets a preview say
+   * "there is more below here" instead of drawing an empty group it never looked at.
+   */
+  hasChild: boolean;
   children: GroupNode[];
 }
 
@@ -42,6 +47,7 @@ function toNode(item: TreeItem, parentUniqueId: string | null): GroupNode {
     parentUniqueId,
     isDocumentGroup: item.itemType === 'documentgroup',
     childrenLoaded: false,
+    hasChild: item.hasChild === true,
     children: [],
   };
 }

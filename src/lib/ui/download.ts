@@ -13,8 +13,8 @@
  */
 const BOM = '﻿';
 
-export function downloadCsv(filename: string, text: string): void {
-  const blob = new Blob([BOM + text], { type: 'text/csv;charset=utf-8' });
+export function downloadText(filename: string, text: string, mimeType: string): void {
+  const blob = new Blob([text], { type: mimeType });
   const url = URL.createObjectURL(blob);
 
   const link = document.createElement('a');
@@ -23,6 +23,10 @@ export function downloadCsv(filename: string, text: string): void {
   link.click();
 
   URL.revokeObjectURL(url);
+}
+
+export function downloadCsv(filename: string, text: string): void {
+  downloadText(filename, BOM + text, 'text/csv;charset=utf-8');
 }
 
 /** `process-shortcuts-2026-08-10.csv` — dated, because operators keep several. */
