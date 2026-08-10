@@ -1,0 +1,22 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+
+.env
+.env.*
+!.env.example
+
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+.DS_Store
+*.log
+npm-debug.log*
+
+# Captured HARs and tenant exports — these contain live customer data and
+# session tokens and must never reach the repo.
+*.har
+/fixtures/live/

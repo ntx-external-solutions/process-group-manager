@@ -1,0 +1,17 @@
+{
+  "name": "process-group-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bulk management of Nintex Process Manager group structure and process group shortcuts",
+  "scripts": {
+    "test": "node --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}
