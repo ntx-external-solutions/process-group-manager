@@ -203,9 +203,30 @@ Both are offered on every task screen:
 The export is the recommended path: it removes the "where do I get UUIDs" problem, and
 round-tripping an untouched row is inherently a no-op.
 
-> Existing Process Manager reports cover some of this. Where a report already produces
-> a usable process list, the export can be skipped — but the column headers below are
-> what the parser expects, so a template download remains the reliable route.
+### 4.6 Process names cannot identify processes
+
+Measured against a real 623-row extract from the demo tenant:
+
+| Key | Rows that collide |
+|---|---|
+| Process Name | 308 of 623 (49%) |
+| Process Name + Group Name | 89 |
+| Process Name + full Group Path | **48** |
+
+`Procure Product or Service` alone appears 15 times. Even a fully-qualified path
+leaves 48 ambiguous rows.
+
+This is a property of the tenant's data, not of any particular export, and it is
+decisive: **name-based resolution is not viable**. Every uploaded file must carry
+`Process ID`, and the shortcut CSV's hard error on ambiguity (§4.3) is correct
+behaviour rather than excessive caution.
+
+It also sets a hard requirement on whichever report we build the export from: it must
+emit process UUIDs. A report carrying only names cannot round-trip, however convenient
+it looks.
+
+> Which Process Manager report to source the export from is still open — see
+> [What we still need](#what-we-still-need).
 
 ---
 
