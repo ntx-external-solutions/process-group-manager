@@ -10,6 +10,8 @@
  */
 
 import type { CsvIssue } from '@/lib/csv/groups.ts';
+import type { ReportSummary } from '@/lib/exec/report.ts';
+import type { Outcome, RunSummary } from '@/lib/exec/runner.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
 
@@ -330,6 +332,102 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
             </tbody>
           </table>
           <Truncated shown={MAX_ROWS} total={preview.blocked.length} />
+        </div>
+      )}
+    </>
+  );
+}
+
+// -------------------------------------------------------------- the run
+
+/**
+ * What happened, once it has happened.
+ *
+ * Leads with the report download rather than the counts. A bulk run's real output is
+ * a file someone keeps — the on-screen summary is for deciding whether to worry, and
+ * everything worth worrying about is listed rather than counted.
+ */
+export function RunResultView({
+  summary,
+  counts,
+  attention,
+  onDownload,
+  onStartAgain,
+}: {
+  summary: RunSummary;
+  counts: ReportSummary;
+  attention: readonly Outcome[];
+  onDownload: () => void;
+  onStartAgain: () => void;
+}) {
+  return (
+    <>
+      {summary.stopped && (
+        <div className="panel warning">
+          <h2>Stopped before the end</h2>
+          <p>{summary.stoppedReason}</p>
+        </div>
+      )}
+
+      <Counts
+        items={[
+          { label: 'applied', value: counts.ok, loud: true },
+          { label: 'skipped', value: counts.skipped, loud: counts.skipped > 0 },
+          { label: 'failed', value: counts.failed, loud: counts.failed > 0 },
+          { label: 'blocked before the run', value: counts.blocked },
+        ]}
+      />
+
+      <div className="panel">
+        <h2>Keep the report</h2>
+        <p>
+          Every row this file touched, including the ones that were skipped and why. It is
+          generated here in your browser and never sent anywhere.
+        </p>
+        <div className="row">
+          <button type="button" onClick={onDownload}>
+            Download the report
+          </button>
+          <button type="button" className="secondary" onClick={onStartAgain}>
+            Start again
+          </button>
+        </div>
+      </div>
+
+      {attention.length > 0 ? (
+        <div className={counts.failed > 0 ? 'panel error' : 'panel warning'}>
+          <h2>Needs a look ({attention.length.toLocaleString()})</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Result</th>
+                <th>Detail</th>
+                <th>Row</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attention.slice(0, MAX_ROWS).map((row, i) => (
+                <tr key={`${row.targetId ?? row.target}-${i}`}>
+                  <td>{row.target}</td>
+                  <td className="nowrap">{row.result}</td>
+                  <td className="muted">{row.detail}</td>
+                  <td className="muted">{row.line ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {attention.length > MAX_ROWS && (
+            <p className="truncated">
+              Showing the first {MAX_ROWS} of {attention.length.toLocaleString()}. The report
+              has the rest.
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="panel">
+          <h2>Everything applied</h2>
+          <p>Nothing was skipped, blocked, or failed.</p>
         </div>
       )}
     </>

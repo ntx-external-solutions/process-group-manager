@@ -1,9 +1,9 @@
 /**
  * Landing page.
  *
- * Says plainly what the tool can and cannot do today. Everything shipped so far reads;
- * nothing writes. That claim is worth stating on the front page while it is still true,
- * because it stops being true the moment the executor lands.
+ * Says plainly what the tool does. It now writes, so the front page leads with the
+ * order of operations — upload, preview, then apply — rather than with a reassurance
+ * that nothing can change.
  */
 export default function Home() {
   return (
@@ -14,11 +14,11 @@ export default function Home() {
       </p>
 
       <div className="panel">
-        <h2>Plan a change</h2>
+        <h2>Start here</h2>
         <p>
-          <a href="/signin">Sign in</a>, then <a href="/plan">upload a CSV</a> to see
-          exactly what would change. Nothing is applied — this release reads your tenant
-          and shows you the plan.
+          <a href="/signin">Sign in</a>, then <a href="/plan">upload a CSV</a>. You see
+          exactly what would change before anything is written, and nothing is applied
+          until you press Apply.
         </p>
       </div>
 
@@ -37,11 +37,12 @@ export default function Home() {
       </div>
 
       <div className="panel">
-        <h2>Still to come</h2>
-        <ul className="checklist">
-          <li>Applying a plan, with journalling and resume</li>
-          <li>Run progress and the audit report</li>
-        </ul>
+        <h2>If a run is interrupted</h2>
+        <p>
+          Close the tab mid-run and nothing is lost or half-done: apply the same file
+          again and anything that already completed is skipped rather than repeated. Every
+          run produces a report listing what changed, what was skipped, and why.
+        </p>
       </div>
 
       <footer>

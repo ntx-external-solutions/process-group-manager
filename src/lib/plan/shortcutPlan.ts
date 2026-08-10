@@ -14,6 +14,13 @@ import type { ProcessActions, ProcessGroupRef, ProcessRevisionStateId } from '..
 export interface ResolvedGroup {
   /** null when this group does not exist yet and will be created earlier in the run. */
   uniqueId: string | null;
+  /**
+   * Process Manager's numeric group id. Null for a group that does not exist yet —
+   * CreateGroup returns a uniqueId but no numeric id, and the write payload needs
+   * both, which is why the executor refuses to point a shortcut at a group the same
+   * run is creating.
+   */
+  id: number | null;
   /** Index into the group plan's creates, when uniqueId is null. */
   plannedSeq: number | null;
   name: string;

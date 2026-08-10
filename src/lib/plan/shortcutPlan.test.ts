@@ -59,12 +59,14 @@ function snapshot(over: Partial<ProcessSnapshot> = {}): ProcessSnapshot {
 const GROUPS: Record<string, ResolvedGroup> = {
   [pathKey(['Legal', 'Compliance'])]: {
     uniqueId: LEGAL,
+    id: 501,
     plannedSeq: null,
     name: 'Compliance',
     display: 'Legal | Compliance',
   },
   [pathKey(['Finance & IT', 'Finance'])]: {
     uniqueId: FINANCE,
+    id: 502,
     plannedSeq: null,
     name: 'Finance',
     display: 'Finance & IT | Finance',
@@ -249,6 +251,7 @@ test('a group created earlier in the same run is a valid target', () => {
     ...deps(),
     resolveGroup: () => ({
       uniqueId: null,
+      id: null,
       plannedSeq: 4,
       name: 'New',
       display: 'Brand | New',
@@ -261,7 +264,7 @@ test('a group created earlier in the same run is a valid target', () => {
 test('a not-yet-created group never counts as already-matching', () => {
   const plan = planShortcuts(rows(`Process ID,Shortcut 1\n${UUID},Brand | New`), {
     ...deps(),
-    resolveGroup: () => ({ uniqueId: null, plannedSeq: 0, name: 'New', display: 'Brand | New' }),
+    resolveGroup: () => ({ uniqueId: null, id: null, plannedSeq: 0, name: 'New', display: 'Brand | New' }),
     resolveProcess: () => ({
       kind: 'found',
       snapshot: snapshot({ currentShortcuts: [sc('something', 'Something')] }),

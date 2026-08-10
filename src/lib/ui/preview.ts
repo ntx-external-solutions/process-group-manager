@@ -17,6 +17,7 @@ import type {
   WritePath,
 } from '../plan/shortcutPlan.ts';
 import { writeCount } from '../plan/shortcutPlan.ts';
+import { expectedVersion as expectedVersionOf } from '../plan/version.ts';
 import type { ProcessGroupRef } from '../pm/types.ts';
 
 // ------------------------------------------------------------- group plan
@@ -124,23 +125,7 @@ export function describeWritePath(writePath: WritePath): string {
   }
 }
 
-/**
- * The version the process is expected to end on.
- *
- * From the observed lifecycle (DESIGN.md): an edit bumps the minor version, and
- * publishing bumps the major and resets the minor. Labelled "expected" wherever it is
- * shown — it is derived from behaviour, not from a documented guarantee.
- */
-export function expectedVersion(version: string, writePath: WritePath): string | null {
-  const match = /^(\d+)\.(\d+)$/.exec(version.trim());
-  if (!match) return null;
-
-  const major = Number(match[1]);
-  const minor = Number(match[2]);
-
-  if (writePath.kind === 'save-only') return `${major}.${minor + 1}`;
-  return `${major + 1}.0`;
-}
+export { expectedVersion } from '../plan/version.ts';
 
 export interface ShortcutPreviewRow {
   line: number;
@@ -182,7 +167,7 @@ function toRow(change: ShortcutChange): ShortcutPreviewRow {
     processUniqueId: change.processUniqueId,
     processName: change.processName,
     version: change.version,
-    expectedVersion: expectedVersion(change.version, change.writePath),
+    expectedVersion: expectedVersionOf(change.version, change.writePath),
     diff: diffShortcuts(change.currentShortcuts, change.desired),
     effect: describeWritePath(change.writePath),
     publishes: change.writePath.kind !== 'save-only',

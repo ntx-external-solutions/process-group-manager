@@ -20,11 +20,11 @@ const LEGAL: ProcessGroupRef = { Id: 1, UniqueId: 'grp-legal', Name: 'Compliance
 const FINANCE: ProcessGroupRef = { Id: 2, UniqueId: 'grp-finance', Name: 'Finance' };
 
 function existing(uniqueId: string, display: string): ResolvedGroup {
-  return { uniqueId, plannedSeq: null, name: display.split(' | ').pop() as string, display };
+  return { uniqueId, id: 900, plannedSeq: null, name: display.split(' | ').pop() as string, display };
 }
 
 function planned(seq: number, display: string): ResolvedGroup {
-  return { uniqueId: null, plannedSeq: seq, name: display.split(' | ').pop() as string, display };
+  return { uniqueId: null, id: null, plannedSeq: seq, name: display.split(' | ').pop() as string, display };
 }
 
 function change(over: Partial<ShortcutChange> = {}): ShortcutChange {
