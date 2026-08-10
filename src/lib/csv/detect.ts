@@ -11,6 +11,7 @@
  * than guessing, because a wrong guess routes the file into the wrong parser.
  */
 
+import { isGroupHeaderRow } from './layout.ts';
 import { parseCsv } from './parse.ts';
 
 export type CsvKind =
@@ -50,10 +51,15 @@ export function classifyCsv(text: string): Classification {
     };
   }
 
-  // A group file is the only single-column file in this workflow. Keying off the
-  // column *count* rather than the header name matters because the header is optional
-  // — a file of bare paths is valid — and because the Process List export also has a
-  // "Group Path" column.
+  // A header made entirely of group-column names — "Group Unique Id", "Group Path",
+  // "Level 1"… — is a group file however wide it is. Checked after the process-list
+  // case above, which also has a "Group Path" column but brings process columns with it.
+  if (isGroupHeaderRow(header)) {
+    return { kind: 'group-file', reason: 'One group per row, levels across columns.' };
+  }
+
+  // With no recognisable header, a single column is the group file: it is the only
+  // one-column file in this workflow, and a file of bare paths carries no header at all.
   if (names.length === 1) {
     return { kind: 'group-file', reason: 'One group path per row.' };
   }

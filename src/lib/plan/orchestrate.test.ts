@@ -45,6 +45,9 @@ function gateway(
       if (!summary) throw new Error(`no such process ${processUniqueId}`);
       return summary;
     },
+    async groupViewers() {
+      return [];
+    },
   };
   return { impl, fetched };
 }
@@ -189,6 +192,9 @@ test('blank rows are never fetched', async () => {
     async processSummary() {
       reads += 1;
       return summary();
+    },
+    async groupViewers() {
+      return [];
     },
   };
 

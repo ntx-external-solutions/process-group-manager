@@ -47,6 +47,23 @@ export function displayPath(segments: readonly string[]): string {
   return segments.join(PATH_DISPLAY_JOINER);
 }
 
+const GROUP_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Normalise a Group Unique Id cell, or null when it is not one.
+ *
+ * Deliberately strict. The alternative to rejecting a malformed id is treating it as
+ * "no id given", which silently turns "this exact group" into "whatever is named that"
+ * — the precise failure the column exists to prevent.
+ */
+export function parseGroupId(raw: string): string | null {
+  const trimmed = raw.trim();
+  // Process Manager writes them lowercase; GUIDs compare case-insensitively, so
+  // normalise once here rather than at every comparison.
+  return GROUP_ID_PATTERN.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
 /**
  * A stable key for a full path, used to index the existing-tree map.
  * Built from matchKey segments so lookups follow the matching rules above.

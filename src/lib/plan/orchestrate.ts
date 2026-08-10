@@ -11,8 +11,10 @@
 import { pathKey } from '../csv/path.ts';
 import type { GroupCsvRow } from '../csv/groups.ts';
 import type { ShortcutCsvRow } from '../csv/shortcuts.ts';
+import type { GroupViewerCount } from '../pm/groups.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
 import type { ChildTreeItemsResponse } from '../pm/types.ts';
+import { describeVisibility, viewerLookupIds, type VisibilityReport } from './visibility.ts';
 import { addLevel, emptyTree, resolvePath, type GroupTree } from './tree.ts';
 import { planGroups, type CreateAction, type GroupPlan } from './groupPlan.ts';
 import {
@@ -26,6 +28,8 @@ import {
 export interface PlanGateway {
   groupsTree(parentUniqueId: string | null): Promise<ChildTreeItemsResponse>;
   processSummary(processUniqueId: string): Promise<ProcessSummary>;
+  /** Batch viewer counts, for the visibility impact of a move. */
+  groupViewers(groupIds: number[]): Promise<GroupViewerCount[]>;
 }
 
 export interface Progress {
@@ -41,6 +45,36 @@ const MAX_PASSES = 64;
 export interface GroupPlanResult {
   plan: GroupPlan;
   tree: GroupTree;
+}
+
+/**
+ * Read the audience at both ends of every planned move.
+ *
+ * Advisory throughout: a failure here reports itself and leaves the plan alone. Losing
+ * the impact figures is worse than not having them, but not as bad as refusing to apply
+ * a plan the operator has already reviewed.
+ */
+export async function describeMoveVisibility(
+  gateway: PlanGateway,
+  tree: GroupTree,
+  plan: GroupPlan,
+): Promise<VisibilityReport> {
+  if (plan.moves.length === 0) return { moves: [], unavailable: null };
+
+  const groupIds = viewerLookupIds(tree, plan);
+  if (groupIds.length === 0) {
+    return { moves: describeVisibility(tree, plan, []), unavailable: null };
+  }
+
+  try {
+    const counts = await gateway.groupViewers(groupIds);
+    return { moves: describeVisibility(tree, plan, counts), unavailable: null };
+  } catch (error) {
+    return {
+      moves: describeVisibility(tree, plan, []),
+      unavailable: error instanceof Error ? error.message : 'Could not read viewer counts.',
+    };
+  }
 }
 
 /** Just the top level — the starting point for any resolution. */
@@ -113,6 +147,23 @@ export async function buildGroupPlan(
   rows: readonly GroupCsvRow[],
   onProgress?: Progress,
 ): Promise<GroupPlanResult> {
+  // A file carrying ids can ask for a group to move, and a group's *current* parent is
+  // unknowable without having seen it. Loading only the branches the file names would
+  // leave a group that has been moved away looking like one that no longer exists.
+  if (rows.some((row) => row.uniqueId !== null)) {
+    const tree = await loadWholeTree(gateway, {
+      ...(onProgress ? { onProgress } : {}),
+    });
+    const outcome = planGroups(tree, rows);
+    if (outcome.status === 'ok') return { plan: outcome.plan, tree };
+    // Nothing is left to load, so a request for more is a bug rather than a state to
+    // recover from. Saying so beats looping until MAX_PASSES.
+    throw new Error(
+      'The whole group tree was loaded but planning still asked for more of it. ' +
+        'This is a bug — please report it.',
+    );
+  }
+
   const tree = await loadRootTree(gateway);
 
   let loaded = 1;

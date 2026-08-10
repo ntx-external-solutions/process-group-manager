@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { parseGroupCsv } from '../csv/groups.ts';
 import type { TreeItem, TreeItemType } from '../pm/types.ts';
 import { addLevel, emptyTree, type GroupTree } from './tree.ts';
+import { GROUP_ID_HEADER } from '../csv/layout.ts';
 import { isNoOp, planGroups } from './groupPlan.ts';
 
 let nextId = 1000;
@@ -139,6 +140,10 @@ test('ambiguous siblings are blocked rather than guessed', () => {
   assert.deepEqual(p.creates, []);
   assert.equal(p.blocked.length, 1);
   assert.match(p.blocked[0]!.message, /matches 2 existing groups/);
+  // The way out is now in the spreadsheet rather than only in Process Manager, so the
+  // message has to name both the column and the ids to choose between.
+  assert.match(p.blocked[0]!.message, /Group Unique Id/);
+  assert.match(p.blocked[0]!.message, /uid-\d+ \("Operations"\)/);
 });
 
 test('a document group cannot be used as an ancestor', () => {
@@ -207,4 +212,395 @@ test('a grandchild of an existing group attaches to its real parent', () => {
     display: 'A',
   });
   assert.deepEqual(p.creates[1]?.parent, { kind: 'planned', seq: 0, display: 'A | B' });
+});
+
+// ------------------------------------------------------------- group ids
+
+/** A tree item with a real GUID, which is the only shape the CSV parser accepts. */
+function guidItem(title: string, guid: string, itemType: TreeItemType = 'group'): TreeItem {
+  return { ...item(title, itemType), uniqueId: guid };
+}
+
+const ID_A = 'aaaaaaaa-1111-2222-3333-444444444444';
+const ID_B = 'bbbbbbbb-1111-2222-3333-444444444444';
+const ID_C = 'cccccccc-1111-2222-3333-444444444444';
+
+test('an id picks one of two siblings that share a name', () => {
+  // The reason the column exists. Without an id this path is unresolvable, and the
+  // tenant genuinely contains pairs like this.
+  const top = item('Crestan');
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+  });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_B},Crestan,Finance`);
+  assert.deepEqual(p.blocked, []);
+  assert.deepEqual(p.creates, []);
+  assert.equal(p.existing.find((e) => e.display === 'Crestan | Finance')?.uniqueId, ID_B);
+});
+
+test('an id on the parent row lets children of a duplicated group resolve', () => {
+  // The ambiguity is at the parent, so the child cannot fix it with its own id — the
+  // parent's row has to pin the path first.
+  const top = item('Crestan');
+  const finance = guidItem('Finance', ID_B);
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), finance],
+    [ID_A]: [],
+    [ID_B]: [],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_B},Crestan,Finance,`,
+      ',Crestan,Finance,Accounts Payable',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.blocked, []);
+  assert.deepEqual(
+    p.creates.map((c) => c.display),
+    ['Crestan | Finance | Accounts Payable'],
+  );
+  // Nested under the group the id named, not the other one.
+  assert.deepEqual(p.creates[0]?.parent, {
+    kind: 'existing',
+    uniqueId: ID_B,
+    display: 'Crestan | Finance',
+  });
+});
+
+test('rows are pinned shallowest first, whatever order the file is in', () => {
+  const top = item('Crestan');
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+    [ID_A]: [],
+    [ID_B]: [guidItem('Accounts Payable', ID_C)],
+  });
+
+  // Child row first. Its own id cannot help until the parent row has pinned "Finance".
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_C},Crestan,Finance,Accounts Payable`,
+      `${ID_B},Crestan,Finance,`,
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.blocked, []);
+  assert.deepEqual(p.creates, []);
+});
+
+test('an id naming a group that no longer exists is blocked, never recreated', () => {
+  const top = item('Crestan');
+  const t = tree([top], { [top.uniqueId]: [guidItem('Finance', ID_A)] });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_B},Crestan,Finance`);
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.renames, []);
+  assert.deepEqual(p.moves, []);
+  assert.equal(p.blocked.length, 1);
+  assert.match(p.blocked[0]!.message, new RegExp(`No group with id ${ID_B}`));
+  assert.match(p.blocked[0]!.message, /may have been deleted/);
+});
+
+test('both halves of a duplicated pair round-trip without being touched', () => {
+  // Re-uploading an untouched export must be a no-op even where the export contains
+  // two groups with the same path.
+  const top = item('Crestan');
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2',
+      `${ID_A},Crestan,Finance`,
+      `${ID_B},Crestan,Finance`,
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.blocked, []);
+  assert.ok(isNoOp(p));
+});
+
+test('a path with no id behaves exactly as it did before', () => {
+  const top = item('Crestan');
+  const t = tree([top], { [top.uniqueId]: [] });
+  const p = plan(t, 'Group Unique Id,Level 1,Level 2\n,Crestan,Brand New');
+  assert.deepEqual(
+    p.creates.map((c) => c.display),
+    ['Crestan | Brand New'],
+  );
+});
+
+test('a row already in place under a duplicated parent is left alone', () => {
+  // Its id says which group it is, and it is exactly where the file puts it — so every
+  // ancestor exists by definition. Re-deriving them by name would block the row on an
+  // ambiguity that changes nothing, and make re-uploading an export report errors.
+  const top = item('Crestan');
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+    [ID_A]: [],
+    [ID_B]: [guidItem('Procure to Pay', ID_C)],
+  });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2,Level 3\n${ID_C},Crestan,Finance,Procure to Pay`);
+  assert.deepEqual(p.blocked, []);
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.moves, []);
+  assert.ok(isNoOp(p));
+});
+
+test('a new group under a duplicated parent is still blocked', () => {
+  // Nothing pins which "Finance" it belongs to, and guessing would put it under the
+  // wrong one — invisibly, since both paths read identically.
+  const top = item('Crestan');
+  const t = tree([top], {
+    [top.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+    [ID_A]: [],
+    [ID_B]: [],
+  });
+
+  const p = plan(t, 'Group Unique Id,Level 1,Level 2,Level 3\n,Crestan,Finance,Brand New');
+  assert.deepEqual(p.creates, []);
+  assert.equal(p.blocked.length, 1);
+  assert.match(p.blocked[0]!.message, /"Crestan \| Finance" matches 2 existing groups/);
+  assert.match(p.blocked[0]!.message, new RegExp(GROUP_ID_HEADER));
+});
+
+// --------------------------------------------------------- rename & move
+
+const ID_D = 'dddddddd-1111-2222-3333-444444444444';
+
+test('a changed name on an id row is a rename, not a second group', () => {
+  const top = item('Crestan');
+  const t = tree([top], { [top.uniqueId]: [guidItem('Finance', ID_A)], [ID_A]: [] });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_A},Crestan,Finance & Legal`);
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.moves, []);
+  assert.deepEqual(p.renames, [
+    {
+      uniqueId: ID_A,
+      fromDisplay: 'Crestan | Finance',
+      from: 'Finance',
+      to: 'Finance & Legal',
+      line: 2,
+    },
+  ]);
+});
+
+test('case and inner spacing alone do not churn a rename', () => {
+  // Matching is case- and whitespace-insensitive, so a file whose spelling drifted must
+  // not push every group in the tenant through a pointless write.
+  const top = item('Crestan');
+  const t = tree([top], { [top.uniqueId]: [guidItem('Finance  Team', ID_A)], [ID_A]: [] });
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_A},Crestan,finance team`);
+  assert.deepEqual(p.renames, []);
+  assert.ok(isNoOp(p));
+});
+
+test('a changed parent on an id row is a move', () => {
+  const ops = item('Operations');
+  const t = tree([item('Crestan'), ops], {
+    [ops.uniqueId]: [],
+  });
+  // Finance currently sits under Crestan; the file puts it under Operations.
+  const crestan = t.roots[0]!;
+  addLevel(t, crestan.uniqueId, [guidItem('Finance', ID_A)]);
+  addLevel(t, ID_A, []);
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_A},Operations,Finance`);
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.renames, []);
+  assert.equal(p.moves.length, 1);
+  assert.equal(p.moves[0]?.uniqueId, ID_A);
+  assert.equal(p.moves[0]?.fromDisplay, 'Crestan | Finance');
+  assert.equal(p.moves[0]?.toDisplay, 'Operations | Finance');
+  assert.deepEqual(p.moves[0]?.toParent, {
+    kind: 'existing',
+    uniqueId: ops.uniqueId,
+    display: 'Operations',
+  });
+});
+
+test('a group can be moved to the top level', () => {
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A)],
+    [ID_A]: [],
+  });
+
+  const p = plan(t, `Group Unique Id,Level 1\n${ID_A},Finance`);
+  assert.equal(p.moves.length, 1);
+  assert.deepEqual(p.moves[0]?.toParent, { kind: 'root' });
+});
+
+test('a group can be moved under a group the same run creates', () => {
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A)],
+    [ID_A]: [],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2',
+      ',Shared Services,',
+      `${ID_A},Shared Services,Finance`,
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.creates.map((c) => c.display), ['Shared Services']);
+  // Resolved as a plan sequence: the destination has no id until the run creates it.
+  assert.deepEqual(p.moves[0]?.toParent, { kind: 'planned', seq: 0, display: 'Shared Services' });
+});
+
+test('a rename and a move on the same row are both planned', () => {
+  const ops = item('Operations');
+  const crestan = item('Crestan');
+  const t = tree([crestan, ops], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A)],
+    [ops.uniqueId]: [],
+    [ID_A]: [],
+  });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_A},Operations,Finance & Legal`);
+  assert.equal(p.renames.length, 1);
+  assert.equal(p.renames[0]?.to, 'Finance & Legal');
+  assert.equal(p.moves.length, 1);
+  assert.equal(p.moves[0]?.uniqueId, ID_A);
+});
+
+test('moving a group inside its own subgroup is refused', () => {
+  // It would detach the whole subtree — a ring with no route back to a root.
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A)],
+    [ID_A]: [guidItem('Payables', ID_B)],
+    [ID_B]: [],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_B},Crestan,Payables,`,
+      `${ID_A},Crestan,Payables,Finance`,
+    ].join('\n'),
+  );
+
+  const cycle = p.blocked.find((b) => /one of its own subgroups/.test(b.message));
+  assert.ok(cycle, `expected a cycle refusal, got ${JSON.stringify(p.blocked)}`);
+  assert.equal(p.moves.some((m) => m.uniqueId === ID_A), false);
+});
+
+test('two moves that only form a cycle together are refused', () => {
+  // Each is legal on its own against the tree as it stands, so the check has to run
+  // against the structure the plan would produce.
+  const t = tree([item('Root')]);
+  const root = t.roots[0]!;
+  addLevel(t, root.uniqueId, [guidItem('A', ID_C), guidItem('B', ID_D)]);
+  addLevel(t, ID_C, []);
+  addLevel(t, ID_D, []);
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_C},Root,B,A`,
+      `${ID_D},Root,A,B`,
+    ].join('\n'),
+  );
+
+  assert.ok(p.blocked.some((b) => /moves inside it/.test(b.message)));
+});
+
+test('moving into a document group is refused', () => {
+  const docs = item('Random docs', 'documentgroup');
+  const crestan = item('Crestan');
+  const t = tree([crestan, docs], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A)],
+    [docs.uniqueId]: [],
+    [ID_A]: [],
+  });
+
+  const p = plan(t, `Group Unique Id,Level 1,Level 2\n${ID_A},Random docs,Finance`);
+  assert.deepEqual(p.moves, []);
+  assert.ok(p.blocked.some((b) => /document-only group/.test(b.message)));
+});
+
+test('a row with no id never moves or renames anything', () => {
+  // Without an id a path *is* the identity, so "not there" means "create it".
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [item('Finance')],
+  });
+  const p = plan(t, 'Crestan | Finance Renamed');
+  assert.deepEqual(p.renames, []);
+  assert.deepEqual(p.moves, []);
+  assert.deepEqual(p.creates.map((c) => c.display), ['Crestan | Finance Renamed']);
+});
+
+test('an untouched export of a tenant with duplicate names re-uploads as a no-op', () => {
+  // Regression: the destination parent used to be re-derived by name, and a path two
+  // groups answer to resolved to whichever was seen first — so a child of the *second*
+  // "Finance" was planned as a move into the first. Silent, and destructive.
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B)],
+    [ID_A]: [],
+    [ID_B]: [guidItem('Procure to Pay', ID_C)],
+    [ID_C]: [],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_A},Crestan,Finance,`,
+      `${ID_B},Crestan,Finance,`,
+      `${ID_C},Crestan,Finance,Procure to Pay`,
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.moves, []);
+  assert.deepEqual(p.renames, []);
+  assert.deepEqual(p.creates, []);
+  assert.deepEqual(p.blocked, []);
+  assert.ok(isNoOp(p));
+});
+
+test('a move into a path two groups share is refused, not guessed', () => {
+  // The rows for both "Finance" groups come first and are already in place, which pins
+  // that path in the create pass's lookup table — to *one* of them. The move has to be
+  // refused on the tree rather than trusting that lookup, or it silently picks a parent.
+  const crestan = item('Crestan');
+  const t = tree([crestan], {
+    [crestan.uniqueId]: [guidItem('Finance', ID_A), guidItem('Finance', ID_B), guidItem('HR', ID_C)],
+    [ID_A]: [],
+    [ID_B]: [],
+    [ID_C]: [],
+  });
+
+  const p = plan(
+    t,
+    [
+      'Group Unique Id,Level 1,Level 2,Level 3',
+      `${ID_A},Crestan,Finance,`,
+      `${ID_B},Crestan,Finance,`,
+      `${ID_C},Crestan,Finance,HR`,
+    ].join('\n'),
+  );
+
+  assert.deepEqual(p.moves, []);
+  assert.equal(p.blocked.length, 1);
+  assert.match(p.blocked[0]!.message, /no telling which one "HR" should move into/);
 });

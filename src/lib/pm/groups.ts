@@ -94,6 +94,52 @@ export function renameGroup(
   });
 }
 
+/**
+ * One node being reparented. The server's field names and casing, not ours.
+ *
+ * `NodeType` is the tree item's own `itemType` passed straight through — the client
+ * does no branching by type, and `"group"` reparents a group through the identical
+ * call that moves a process.
+ */
+export interface TreeNodeMove {
+  NodeType: 'group';
+  /** Empty string moves the node to the top level. */
+  ParentUniqueId: string;
+  OriginalParentUniqueId: string;
+  ChildUniqueId: string;
+  /** -1 appends. Ordering within the destination is not something v1 sets. */
+  Position: number;
+  SiblingUniqueId: string | null;
+}
+
+export interface ReorderResponse {
+  success: boolean;
+  errors: unknown[] | null;
+}
+
+/**
+ * Reparent groups. Takes an array, so many moves commit in one request.
+ *
+ * The group keeps its id, and therefore its processes, permissions, and stakeholders —
+ * which is what makes matching-and-moving strictly better than creating a new group and
+ * re-homing everything into it. It touches no process revision, so it publishes nothing
+ * and notifies nobody.
+ */
+export function reorderTreeNodes(
+  ctx: PmContext,
+  moves: readonly TreeNodeMove[],
+): Promise<ReorderResponse> {
+  return pmRequest<ReorderResponse>(ctx, {
+    path: '/Process/Edit/ReorderTreeNodes',
+    method: 'POST',
+    body: moves,
+    // Write policy: retried only when the server says it never looked at the request
+    // (429/408). A 5xx or a dropped connection leaves the outcome unknown, and a
+    // reparent is not idempotent enough to send twice on a guess.
+    retry: 'write',
+  });
+}
+
 export interface ActionPermission {
   actionPermissionType: string;
   value: boolean;

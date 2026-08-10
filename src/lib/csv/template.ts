@@ -6,10 +6,21 @@
  * That is what makes replace semantics safe for a partially-edited spreadsheet.
  */
 
-import { displayPath } from './path.ts';
+import { GROUP_ID_HEADER } from './layout.ts';
 import { toCsv } from './parse.ts';
 
-export const GROUP_HEADER = ['Group Path'] as const;
+export { GROUP_ID_HEADER } from './layout.ts';
+
+/**
+ * Level columns are always at least this wide, so a generated file is unambiguously
+ * the one-column-per-level shape rather than a single path column.
+ */
+const MIN_GROUP_LEVELS = 3;
+
+export function groupHeader(levels = MIN_GROUP_LEVELS): string[] {
+  const width = Math.max(MIN_GROUP_LEVELS, levels);
+  return [GROUP_ID_HEADER, ...Array.from({ length: width }, (_, i) => `Level ${i + 1}`)];
+}
 
 /**
  * Named to match Process Manager's own Process List export, so a file downloaded
@@ -31,20 +42,41 @@ export function shortcutHeader(columns = DEFAULT_SHORTCUT_COLUMNS): string[] {
   ];
 }
 
-/** Blank group-structure template with illustrative rows. */
+/**
+ * Blank group-structure template.
+ *
+ * Every row spells out its whole path rather than relying on the row above. That is
+ * more typing, but a row can then be moved, sorted, or deleted without silently
+ * reparenting everything beneath it.
+ */
 export function groupTemplate(): string {
+  const header = groupHeader();
   return toCsv([
-    [...GROUP_HEADER],
-    ['Top Group'],
-    ['Top Group | Secondary Group'],
-    ['Top Group | Secondary Group | Lower Level Group 1'],
-    ['Top Group | Secondary Group | Lower Level Group 2'],
+    header,
+    pad(['', 'Top Group'], header.length),
+    pad(['', 'Top Group', 'Secondary Group'], header.length),
+    pad(['', 'Top Group', 'Secondary Group', 'Lower Level Group 1'], header.length),
+    pad(['', 'Top Group', 'Secondary Group', 'Lower Level Group 2'], header.length),
   ]);
 }
 
-/** Every existing group path, newest structure first as the tree reports it. */
-export function groupExport(paths: readonly (readonly string[])[]): string {
-  return toCsv([[...GROUP_HEADER], ...paths.map((p) => [displayPath(p)])]);
+export interface GroupExportRow {
+  uniqueId: string;
+  path: readonly string[];
+}
+
+/**
+ * Every existing group, in tree order, one level per column.
+ *
+ * The ids are what make this file safe to edit and send back: a row that keeps its id
+ * refers to that group whatever its name, so re-uploading an untouched export is a
+ * no-op even where two groups share a name.
+ */
+export function groupExport(groups: readonly GroupExportRow[]): string {
+  const deepest = groups.reduce((n, g) => Math.max(n, g.path.length), 0);
+  const header = groupHeader(deepest);
+  const body = groups.map((g) => pad([g.uniqueId, ...g.path], header.length));
+  return toCsv([header, ...body]);
 }
 
 export interface ShortcutExportRow {

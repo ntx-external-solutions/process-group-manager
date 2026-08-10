@@ -23,13 +23,15 @@ test('the shortcut template parses cleanly through our own parser', () => {
   assert.deepEqual(r.errors, []);
 });
 
+const id = (n: number): string => `${String(n).repeat(8)}-1111-2222-3333-444444444444`;
+
 test('a group export round-trips back to the same paths', () => {
-  const paths = [
-    ['Go To Market (Sales and Marketing)'],
-    ['Go To Market (Sales and Marketing)', 'Marketing'],
-    ['Partner Portal', 'Partner Facing '],
+  const groups = [
+    { uniqueId: id(1), path: ['Go To Market (Sales and Marketing)'] },
+    { uniqueId: id(2), path: ['Go To Market (Sales and Marketing)', 'Marketing'] },
+    { uniqueId: id(3), path: ['Partner Portal', 'Partner Facing '] },
   ];
-  const r = parseGroupCsv(groupExport(paths));
+  const r = parseGroupCsv(groupExport(groups));
   assert.deepEqual(r.errors, []);
   assert.deepEqual(
     r.rows.map((x) => x.display),
@@ -40,6 +42,41 @@ test('a group export round-trips back to the same paths', () => {
       'Partner Portal | Partner Facing',
     ],
   );
+});
+
+test('a group export carries the id of every group back with it', () => {
+  // Without this the file cannot say "this exact group", which is the only way to
+  // address one of two siblings that share a name.
+  const r = parseGroupCsv(
+    groupExport([
+      { uniqueId: id(1), path: ['Crestan', 'Finance'] },
+      { uniqueId: id(2), path: ['Crestan', 'Finance'] },
+    ]),
+  );
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(
+    r.rows.map((x) => x.uniqueId),
+    [id(1), id(2)],
+  );
+});
+
+test('an export is wide enough for its deepest path', () => {
+  const csv = groupExport([{ uniqueId: id(1), path: ['A', 'B', 'C', 'D', 'E'] }]);
+  const r = parseGroupCsv(csv);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.rows[0]?.segments, ['A', 'B', 'C', 'D', 'E']);
+});
+
+test('the template uses one column per level', () => {
+  // The shape operators asked for, and the one that survives a row being sorted or
+  // deleted — every row spells out its whole path.
+  const r = parseGroupCsv(groupTemplate());
+  assert.equal(r.layout.style, 'columns');
+  assert.deepEqual(r.rows.at(-1)?.segments, [
+    'Top Group',
+    'Secondary Group',
+    'Lower Level Group 2',
+  ]);
 });
 
 test('a shortcut export round-trips to the same intent', () => {

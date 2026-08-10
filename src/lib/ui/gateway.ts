@@ -8,6 +8,7 @@
  */
 
 import type { ExecGateway, SetShortcutsOutput } from '../exec/runner.ts';
+import type { GroupViewerCount, ReorderResponse } from '../pm/groups.ts';
 import type { PlanGateway } from '../plan/orchestrate.ts';
 import type { Operation, ProcessSummary } from '../pm/operations.ts';
 import type {
@@ -70,6 +71,7 @@ export function browserGateway(): PlanGateway {
       callPm<ChildTreeItemsResponse>({ op: 'groups.tree', parentUniqueId }),
     processSummary: (processUniqueId) =>
       callPm<ProcessSummary>({ op: 'process.summary', processUniqueId }),
+    groupViewers: (groupIds) => callPm<GroupViewerCount[]>({ op: 'groups.viewers', groupIds }),
   };
 }
 
@@ -86,6 +88,13 @@ export function browserExecGateway(): ExecGateway {
     createGroup: (parentUniqueId) =>
       callPm<CreateGroupResponse>({ op: 'groups.create', parentUniqueId }),
     renameGroup: (uniqueId, name) => callPm<{ isValid: boolean }>({ op: 'groups.rename', uniqueId, name }),
+    moveGroup: (uniqueId, newParentUniqueId, oldParentUniqueId) =>
+      callPm<ReorderResponse>({
+        op: 'groups.move',
+        uniqueId,
+        newParentUniqueId,
+        oldParentUniqueId,
+      }),
     setShortcuts: (input) =>
       callPm<SetShortcutsOutput>({
         op: 'process.setShortcuts',

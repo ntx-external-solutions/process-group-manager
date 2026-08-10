@@ -20,6 +20,7 @@ import {
   getGroupPermissions,
   getGroupViewerCounts,
   renameGroup,
+  reorderTreeNodes,
   validateGroupAction,
 } from './groups.ts';
 import {
@@ -40,6 +41,18 @@ export type Operation =
   | { op: 'groups.validateCreate'; parentUniqueId: string | null }
   | { op: 'groups.create'; parentUniqueId: string | null }
   | { op: 'groups.rename'; uniqueId: string; name: string }
+  /**
+   * Reparent one group. Deliberately one at a time even though the endpoint takes an
+   * array: the runner journals each move separately, and a batch whose response says
+   * only `success: false` cannot be attributed to a particular group.
+   */
+  | {
+      op: 'groups.move';
+      uniqueId: string;
+      /** null moves it to the top level. */
+      newParentUniqueId: string | null;
+      oldParentUniqueId: string | null;
+    }
   | { op: 'groups.permissions'; groupIds: number[] }
   | { op: 'groups.viewers'; groupIds: number[] }
   | { op: 'process.summary'; processUniqueId: string }
@@ -63,6 +76,7 @@ export const OPERATION_NAMES: readonly OperationName[] = [
   'groups.validateCreate',
   'groups.create',
   'groups.rename',
+  'groups.move',
   'groups.permissions',
   'groups.viewers',
   'process.summary',
@@ -113,6 +127,20 @@ export async function execute(ctx: PmContext, operation: Operation): Promise<unk
 
     case 'groups.rename':
       return renameGroup(ctx, operation.uniqueId, operation.name);
+
+    case 'groups.move':
+      return reorderTreeNodes(ctx, [
+        {
+          NodeType: 'group',
+          // The server reads an empty string as "top level"; there is no null form.
+          ParentUniqueId: operation.newParentUniqueId ?? '',
+          OriginalParentUniqueId: operation.oldParentUniqueId ?? '',
+          ChildUniqueId: operation.uniqueId,
+          // Append. Ordering siblings is a separate feature and is not attempted here.
+          Position: -1,
+          SiblingUniqueId: null,
+        },
+      ]);
 
     case 'groups.permissions':
       return getGroupPermissions(ctx, operation.groupIds);
@@ -231,6 +259,26 @@ export function parseOperation(input: unknown): ParseResult {
       if (!uniqueId) return { ok: false, error: 'groups.rename: "uniqueId" is required.' };
       if (!name) return { ok: false, error: 'groups.rename: "name" is required.' };
       return { ok: true, operation: { op, uniqueId, name } };
+    }
+
+    case 'groups.move': {
+      const uniqueId = requiredString(body['uniqueId']);
+      if (!uniqueId) return { ok: false, error: 'groups.move: "uniqueId" is required.' };
+
+      const newParentUniqueId = nullableString(body['newParentUniqueId']);
+      const oldParentUniqueId = nullableString(body['oldParentUniqueId']);
+      if (newParentUniqueId === undefined || oldParentUniqueId === undefined) {
+        return {
+          ok: false,
+          error: 'groups.move: parent ids must each be a string or null.',
+        };
+      }
+      if (newParentUniqueId === uniqueId) {
+        // The server would happily detach the group from the tree entirely.
+        return { ok: false, error: 'groups.move: a group cannot be its own parent.' };
+      }
+
+      return { ok: true, operation: { op, uniqueId, newParentUniqueId, oldParentUniqueId } };
     }
 
     case 'groups.permissions':

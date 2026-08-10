@@ -26,14 +26,16 @@ import type { ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
 import { groupTemplate, groupExport, shortcutTemplate } from '@/lib/csv/template.ts';
-import { allPaths } from '@/lib/plan/tree.ts';
+import { allGroups } from '@/lib/plan/tree.ts';
 import {
   buildGroupPlan,
   buildShortcutPlan,
+  describeMoveVisibility,
   loadRootTree,
   loadWholeTree,
   resolveShortcutTargets,
 } from '@/lib/plan/orchestrate.ts';
+import type { VisibilityReport } from '@/lib/plan/visibility.ts';
 import { datedFilename, downloadCsv, downloadText } from '@/lib/ui/download.ts';
 import {
   browserExecGateway,
@@ -93,6 +95,7 @@ export default function PlanPage() {
   // The previews are for reading; these are what actually gets executed. Keeping both
   // from the same planning pass is what guarantees the run matches what was approved.
   const [orphans, setOrphans] = useState<OrphanGroup[]>([]);
+  const [visibility, setVisibility] = useState<VisibilityReport | null>(null);
   const [groupPlan, setGroupPlan] = useState<GroupPlan | null>(null);
   const [shortcutPlan, setShortcutPlan] = useState<ShortcutPlan | null>(null);
 
@@ -142,6 +145,7 @@ export default function PlanPage() {
     setGroupPreview(null);
     setStructure(null);
     setOrphans([]);
+    setVisibility(null);
     setShortcutPreview(null);
     setGroupPlan(null);
     setShortcutPlan(null);
@@ -175,9 +179,13 @@ export default function PlanPage() {
       const tree = await loadWholeTree(browserGateway(), {
         onProgress: (event) => setBusy(`Reading the group tree… ${event.done} groups`),
       });
-      const paths = allPaths(tree);
-      downloadCsv(datedFilename('group-structure'), groupExport(paths));
-      setNote(`Downloaded ${paths.length.toLocaleString()} existing group paths.`);
+      const groups = allGroups(tree);
+      downloadCsv(datedFilename('group-structure'), groupExport(groups));
+      setNote(
+        `Downloaded ${groups.length.toLocaleString()} existing groups, one level per ` +
+          `column. Leave the Group Unique Id column alone on rows you are keeping — ` +
+          `it is what ties a row to that exact group.`,
+      );
     } catch (cause) {
       handleFailure(cause);
     } finally {
@@ -252,6 +260,14 @@ export default function PlanPage() {
     );
     setGroupPreview(buildGroupPreview(plan));
     setGroupPlan(plan);
+
+    if (plan.moves.length > 0) {
+      // Permissions are inherited down the tree, so a move changes who can see
+      // everything inside the group. Advisory: a failure here leaves the plan alone.
+      setBusy('Checking who can see the groups being moved…');
+      setVisibility(await describeMoveVisibility(browserGateway(), tree, plan));
+    }
+
     // Half-made groups from an earlier interrupted attempt. They are invisible to
     // name matching, so without this the file would create duplicates beside them.
     setOrphans(findOrphanGroups(tree));
@@ -456,8 +472,21 @@ export default function PlanPage() {
         <div className="panel">
           <h2>2. Start from a file</h2>
           <p>
-            One group path per row, levels separated by <code>|</code>. Groups that already
-            exist are left alone — this never renames, moves, or deletes anything.
+            One group per row, one level per column — <code>Level 1</code>,{' '}
+            <code>Level 2</code>, and so on. Write the full path on every row rather than
+            leaving parent cells blank. A single <code>Group Path</code> column with levels
+            separated by <code>|</code> still works too.
+          </p>
+          <p>
+            Rows carry a <code>Group Unique Id</code>, which pins a row to that exact
+            group. Leave it filled in on rows you are keeping, and blank on rows you add.
+            On a row that has one, the name and level columns are the state you want:
+            change the last name to rename the group, move it to different columns to
+            reparent it. It keeps its id, so its processes and permissions go with it.
+          </p>
+          <p>
+            <strong>Nothing is ever deleted.</strong> A group missing from your file is
+            left exactly as it is — removing a row is not how you remove a group.
           </p>
           <div className="row">
             <button
@@ -508,7 +537,7 @@ export default function PlanPage() {
           <p>
             {task === 'shortcuts'
               ? 'Either your edited shortcuts file, or a Process List export to convert.'
-              : 'A CSV with one group path per row.'}
+              : 'A CSV with one group per row.'}
           </p>
           <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={working} />
           {fileName !== null && <p className="filename">{fileName}</p>}
@@ -548,7 +577,12 @@ export default function PlanPage() {
       {groupPreview !== null && (
         <>
           <h2 className="section">What would happen</h2>
-          <GroupPreviewView preview={groupPreview} structure={structure} orphans={orphans} />
+          <GroupPreviewView
+            preview={groupPreview}
+            structure={structure}
+            orphans={orphans}
+            visibility={visibility}
+          />
         </>
       )}
 

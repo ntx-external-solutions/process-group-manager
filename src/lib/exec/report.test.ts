@@ -71,6 +71,8 @@ test('blocked rows appear in the CSV alongside what was attempted', () => {
     outcomes: [outcome()],
     groupPlan: {
       creates: [],
+      renames: [],
+      moves: [],
       existing: [],
       blocked: [{ line: 5, display: 'Bad | Path', message: 'Matches 2 existing groups.' }],
     },
@@ -78,7 +80,9 @@ test('blocked rows appear in the CSV alongside what was attempted', () => {
 
   const grid = parseCsv(csv);
   assert.equal(grid.length, 3, 'header, one outcome, one blocked row');
-  assert.deepEqual((grid[2] as string[]).slice(0, 5), ['group', 'Bad | Path', '', 'create', 'blocked']);
+  // "group", not "create": the planner refuses a row before deciding whether it would
+  // have created, renamed, or moved anything.
+  assert.deepEqual((grid[2] as string[]).slice(0, 5), ['group', 'Bad | Path', '', 'group', 'blocked']);
 });
 
 test('the version column is labelled as expected, not as observed', () => {

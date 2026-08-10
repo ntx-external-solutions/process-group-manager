@@ -43,3 +43,21 @@ test('an empty file is unknown, not mistaken for a group file', () => {
 test('an unrelated spreadsheet is refused rather than guessed at', () => {
   assert.equal(classifyCsv('Name,Email,Department\nA,b@c.d,Ops').kind, 'unknown');
 });
+
+test('a wide group file is recognised however many columns it has', () => {
+  // The header Excel produces when the old template is split across columns. Before
+  // this it fell through to "unknown" and the upload was refused.
+  assert.equal(classifyCsv('Group Path,,\nTop Group,Secondary Group,Lower').kind, 'group-file');
+});
+
+test('a group file with ids and Level headers is recognised', () => {
+  assert.equal(
+    classifyCsv('Group Unique Id,Level 1,Level 2\nabc,Finance,Procure to Pay').kind,
+    'group-file',
+  );
+});
+
+test("a Process List export is still the export, not a wide group file", () => {
+  // It has a "Group Path" column too, so the process columns are what tell them apart.
+  assert.equal(classifyCsv(`${PROCESS_LIST_HEADER}\n`).kind, 'process-list');
+});

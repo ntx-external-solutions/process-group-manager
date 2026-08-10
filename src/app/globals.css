@@ -373,6 +373,29 @@ ul.tree .tag.new {
   }
 }
 
+/* A move is the change most worth spotting in the tree — it takes a whole subtree,
+   and its permissions, somewhere else. Amber rather than green: not a new thing. */
+ul.tree li.moved > .name {
+  font-weight: 600;
+  color: #a15c00;
+}
+
+ul.tree .tag.moved {
+  color: #a15c00;
+  border-color: currentColor;
+}
+
+ul.tree li.renamed > .name {
+  font-weight: 600;
+}
+
+@media (prefers-color-scheme: dark) {
+  ul.tree li.moved > .name,
+  ul.tree .tag.moved {
+    color: #e0a458;
+  }
+}
+
 ul.tree li.hidden-children {
   color: var(--muted);
   font-size: 0.82rem;
