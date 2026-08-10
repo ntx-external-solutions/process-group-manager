@@ -55,9 +55,17 @@ __RequestVerificationToken: <token>
 X-Requested-With: XMLHttpRequest
 ```
 
-Whether the antiforgery token is genuinely required *alongside* a bearer token, or is
-vestigial from requests copied out of the browser, is untested — worth resolving in
-the spike, since scraping it from rendered HTML is the ugliest part of the client.
+✅ **Reads work with the bearer token alone.** Confirmed 2026-08-10 against the demo
+tenant through the deployed proxy: `GetChildProcessGroupTreeItems` returned all 15
+top-level items with an `Authorization: Bearer` header and **no session cookie and no
+antiforgery token**. Nothing needs to be scraped from rendered HTML, and the entire
+read/dry-run path is unblocked.
+
+⚠️ **This does not settle writes.** The test was a GET. ASP.NET antiforgery validation
+applies to state-changing requests, so `CreateGroup`, `RenameGroup`, the process `PUT`
+and `Publish` may still require `__RequestVerificationToken`. The client sends it when
+present and omits it when not, so both outcomes are already supported — but which one
+holds will only be known at the first write.
 
 A form-login fallback exists (`POST /Login.aspx`). Its payload includes an explicit
 `IsSingleSignOnEnabled` field — see R3.
