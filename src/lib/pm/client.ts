@@ -14,8 +14,12 @@ export interface PmContext {
   /** OAuth bearer token from /oauth2/token. */
   token: string;
   /**
-   * ASP.NET antiforgery token. Observed alongside bearer auth on every write; whether
-   * it is genuinely required is spike 0 (PLAN.md §3). Sent when present.
+   * ASP.NET antiforgery token.
+   *
+   * Confirmed **not required** for bearer-authenticated calls, reads or writes — the
+   * token in the HAR captures is a browser-session artefact, and Nintex's own bulk
+   * PowerShell script writes to production tenants without one. Retained only as an
+   * escape hatch if some endpoint ever turns out to differ; nothing sets it today.
    */
   antiforgeryToken?: string | undefined;
   fetch: typeof fetch;
@@ -45,6 +49,11 @@ export interface PmRequestOptions {
   retry?: RetryPolicy;
   /** Overrides the default attempt count. */
   attempts?: number;
+  /**
+   * How to read a successful body. `text` is for endpoints that return CSV rather
+   * than JSON, such as the process list report.
+   */
+  parse?: 'json' | 'text';
 }
 
 export interface PmError extends Error {
@@ -111,6 +120,7 @@ export async function pmRequest<T>(ctx: PmContext, options: PmRequestOptions): P
     query,
     retry = 'read',
     attempts = DEFAULT_ATTEMPTS,
+    parse = 'json',
   } = options;
 
   const url = buildUrl(ctx, path, query);
@@ -157,7 +167,7 @@ export async function pmRequest<T>(ctx: PmContext, options: PmRequestOptions): P
       throw lastError;
     }
 
-    if (response.ok) return parseBody<T>(response);
+    if (response.ok) return parseBody<T>(response, parse);
 
     const text = await safeText(response);
     lastError = pmError(
@@ -183,10 +193,11 @@ export function backoffMs(attempt: number, retryAfter: number | null): number {
   return BASE_DELAY_MS * 2 ** (attempt - 1);
 }
 
-async function parseBody<T>(response: Response): Promise<T> {
+async function parseBody<T>(response: Response, parse: 'json' | 'text'): Promise<T> {
   // 204 is the documented success for the process PUT.
   if (response.status === 204) return undefined as T;
   const text = await safeText(response);
+  if (parse === 'text') return text as T;
   if (text.trim() === '') return undefined as T;
   return JSON.parse(text) as T;
 }

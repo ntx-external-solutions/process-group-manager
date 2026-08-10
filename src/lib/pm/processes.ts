@@ -157,3 +157,94 @@ export function withShortcuts(
 export function currentShortcutIds(processJson: ProcessJson): string[] {
   return (processJson.ProcessGroupItems.ProcessGroupShortcut ?? []).map((s) => s.UniqueId);
 }
+
+// --------------------------------------------------------------- listing
+
+/** A row from the process list endpoint. */
+export interface ProcessListItem {
+  processId: number;
+  processName: string;
+  processUniqueId: string;
+  processState: string;
+  groupId: number;
+  groupUniqueId: string;
+  groupName: string;
+  processOwner: string;
+  processExpert: string;
+}
+
+export interface ProcessListPage {
+  items: ProcessListItem[];
+  totalItemCount: number;
+}
+
+/**
+ * List types accepted by the process list endpoint.
+ * Values taken from Nintex's own bulk-operations script.
+ */
+export const ProcessListType = {
+  Active: 0,
+  Archived: 7,
+} as const;
+
+/** Matches the page size that script uses; the endpoint is 1-indexed. */
+export const LIST_PAGE_SIZE = 200;
+
+export function listProcesses(
+  ctx: PmContext,
+  page: number,
+  pageSize: number = LIST_PAGE_SIZE,
+  listType: number = ProcessListType.Active,
+): Promise<ProcessListPage> {
+  return pmRequest<ProcessListPage>(ctx, {
+    path: '/Bff/Process/api/v1/processes',
+    query: { Page: page, PageSize: pageSize, ListType: listType },
+  });
+}
+
+/**
+ * Walk every page of the process list.
+ *
+ * Termination follows the reference script: a short page means the end. Relying on
+ * totalItemCount alone would loop forever if the count and the pages ever disagreed,
+ * so a hard page cap backstops it.
+ */
+export async function listAllProcesses(
+  ctx: PmContext,
+  options: {
+    pageSize?: number;
+    listType?: number;
+    onPage?: (loaded: number, total: number) => void;
+    maxPages?: number;
+  } = {},
+): Promise<ProcessListItem[]> {
+  const pageSize = options.pageSize ?? LIST_PAGE_SIZE;
+  const listType = options.listType ?? ProcessListType.Active;
+  const maxPages = options.maxPages ?? 500;
+
+  const all: ProcessListItem[] = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    const result = await listProcesses(ctx, page, pageSize, listType);
+    const items = result?.items ?? [];
+    all.push(...items);
+    options.onPage?.(all.length, result?.totalItemCount ?? all.length);
+    if (items.length < pageSize) break;
+  }
+
+  return all;
+}
+
+/**
+ * The tenant's process list report, as CSV.
+ *
+ * Preferred over paging the JSON endpoint when the goal is simply "give the operator
+ * a file with process IDs in it": one request instead of eight, and the tenant does
+ * the formatting.
+ */
+export function exportProcessListCsv(ctx: PmContext): Promise<string> {
+  return pmRequest<string>(ctx, {
+    path: '/exports/api/v1/reports/ProcessListReport/csv',
+    parse: 'text',
+  });
+}

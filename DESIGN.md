@@ -61,11 +61,25 @@ top-level items with an `Authorization: Bearer` header and **no session cookie a
 antiforgery token**. Nothing needs to be scraped from rendered HTML, and the entire
 read/dry-run path is unblocked.
 
-⚠️ **This does not settle writes.** The test was a GET. ASP.NET antiforgery validation
-applies to state-changing requests, so `CreateGroup`, `RenameGroup`, the process `PUT`
-and `Publish` may still require `__RequestVerificationToken`. The client sends it when
-present and omits it when not, so both outcomes are already supported — but which one
-holds will only be known at the first write.
+✅ **Writes need no antiforgery token either.** The
+[Nintex-Process-Manager-Bulk-Operations](https://github.com/ntx-external-solutions/Nintex-Process-Manager-Bulk-Operations)
+PowerShell script performs bulk writes against production tenants, and its
+`Invoke-ApiPost` / `Invoke-ApiPut` helpers send exactly:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+Accept: application/json
+X-Requested-With: XMLHttpRequest
+```
+
+`__RequestVerificationToken` appears nowhere in it. The token seen in the HAR
+captures is a browser-session artefact, not an API requirement — antiforgery
+validation is tied to cookie authentication and does not apply to bearer-authenticated
+calls.
+
+**The question is closed.** No token scraping is needed anywhere, for reads or writes,
+and `src/lib/pm/antiforgery.ts` is not needed.
 
 A form-login fallback exists (`POST /Login.aspx`). Its payload includes an explicit
 `IsSingleSignOnEnabled` field — see R3.

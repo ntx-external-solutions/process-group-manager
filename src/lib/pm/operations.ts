@@ -25,8 +25,10 @@ import {
 import {
   buildUpdateEnvelope,
   currentShortcutIds,
+  exportProcessListCsv,
   getLatestRevision,
   getProcess,
+  listProcesses,
   publishProcess,
   updateProcess,
   withShortcuts,
@@ -50,7 +52,9 @@ export type Operation =
       expectedRevisionEditId: number;
       submitForApproval: boolean;
     }
-  | { op: 'process.publish'; processUniqueId: string; processRevisionEditId: number };
+  | { op: 'process.publish'; processUniqueId: string; processRevisionEditId: number }
+  | { op: 'processes.list'; page: number; listType: number }
+  | { op: 'processes.exportCsv' };
 
 export type OperationName = Operation['op'];
 
@@ -64,6 +68,8 @@ export const OPERATION_NAMES: readonly OperationName[] = [
   'process.summary',
   'process.setShortcuts',
   'process.publish',
+  'processes.list',
+  'processes.exportCsv',
 ];
 
 /**
@@ -122,6 +128,12 @@ export async function execute(ctx: PmContext, operation: Operation): Promise<unk
 
     case 'process.publish':
       return publishProcess(ctx, operation.processUniqueId, operation.processRevisionEditId);
+
+    case 'processes.list':
+      return listProcesses(ctx, operation.page, undefined, operation.listType);
+
+    case 'processes.exportCsv':
+      return { csv: await exportProcessListCsv(ctx) };
   }
 }
 
@@ -269,6 +281,21 @@ export function parseOperation(input: unknown): ParseResult {
           submitForApproval: body['submitForApproval'] === true,
         },
       };
+    }
+
+    case 'processes.exportCsv':
+      return { ok: true, operation: { op } };
+
+    case 'processes.list': {
+      const page = body['page'];
+      if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) {
+        return { ok: false, error: 'processes.list: "page" must be a positive integer.' };
+      }
+      const listType = body['listType'];
+      if (listType !== undefined && typeof listType !== 'number') {
+        return { ok: false, error: 'processes.list: "listType" must be a number.' };
+      }
+      return { ok: true, operation: { op, page, listType: (listType as number) ?? 0 } };
     }
 
     case 'process.publish': {
