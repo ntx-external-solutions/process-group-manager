@@ -89,7 +89,43 @@ test('rows may be identified by name when no ID column exists', () => {
 
 test('a file with no way to identify processes is rejected', () => {
   const r = parseShortcutCsv('Shortcut 1\nLegal');
-  assert.match(r.errors[0]!.message, /"Process ID" column/);
+  assert.match(r.errors[0]!.message, /"Process Unique Id" column/);
+});
+
+test('accepts Process Manager\'s own Process List export, with Shortcut columns added', () => {
+  // Header lifted verbatim from a real export. The operator downloads that report,
+  // adds Shortcut columns in Excel, and uploads it — no intermediate step.
+  const header =
+    'Group Name,Process Name,Status,Process Owner,Process Expert,Star Rating,' +
+    'Simplicity,Effectiveness,Created Date,Modified Date,Modified By,Version,' +
+    'Minimode Url,Minimode Issued Date,Minimode Issued By,Group Path,Short Cut,' +
+    'Source Group,Source Group Path,Process Unique Id,Shortcut 1,Shortcut 2';
+  const row =
+    'Example Processes,NPS Capture,Suggested,,,Not applicable,Not applicable,' +
+    'Not applicable,11 Feb 2026,10 Aug 2026,Jonathan Butler,,,,,' +
+    '"Promapp Demo Ltd. > Testing Experience > Example Processes > NPS Capture",' +
+    `No,,,${UUID},Legal | Compliance,`;
+
+  const r = parseShortcutCsv(`${header}\n${row}`);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.rows[0]?.processId, UUID);
+  assert.equal(r.rows[0]?.processName, 'NPS Capture');
+
+  const intent = r.rows[0]!.intent;
+  assert.ok(intent.kind === 'set');
+  assert.deepEqual(intent.targets.map((t) => t.display), ['Legal | Compliance']);
+});
+
+test('the report\'s "Short Cut" column is not mistaken for a shortcut column', () => {
+  // "Short Cut" (with a space) is a status flag in the report, not data we apply.
+  // Treating it as a malformed "Shortcut N" would reject every exported file.
+  const r = parseShortcutCsv(
+    `Process Unique Id,Short Cut,Source Group,Shortcut 1\n${UUID},No,,Legal`,
+  );
+  assert.deepEqual(r.errors, []);
+  const intent = r.rows[0]!.intent;
+  assert.ok(intent.kind === 'set');
+  assert.deepEqual(intent.targets.map((t) => t.display), ['Legal']);
 });
 
 test('a file with no shortcut columns is rejected', () => {

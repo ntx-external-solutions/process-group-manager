@@ -192,20 +192,78 @@ Blank means "I didn't say", not "delete" — which is what makes a partially-fil
 spreadsheet safe. Removing shortcuts stays possible, but only by saying so. Any plan
 containing `CLEAR` rows lists them as their own category with its own confirmation.
 
-### 4.5 Templates and exports
+### 4.5 Where the input file comes from
 
-Both are offered on every task screen:
+**Shortcuts — Process Manager's Process List export seeds the file; it is not the
+file.** Exported with shortcuts included, that report carries everything needed:
+`Process Unique Id`, and one row per *placement* so shortcuts are visible.
 
-- **Template** — headers plus two or three illustrative rows, for starting fresh.
-- **Export** — current state. Groups: every existing path. Shortcuts: every process
-  with UUID, name, home group, and *current* shortcuts, scoped to a chosen subtree.
+```
+Export Process List (with shortcuts)  →  upload  →  download clean wide-format file,
+current shortcuts pre-filled  →  edit in Excel  →  upload  →  preview  →  apply
+```
 
-The export is the recommended path: it removes the "where do I get UUIDs" problem, and
-round-tripping an untouched row is inherently a no-op.
+**Why transform rather than edit the report directly.** It is one row per placement,
+which makes it a poor upload format:
 
-> Existing Process Manager reports cover some of this. Where a report already produces
-> a usable process list, the export can be skipped — but the column headers below are
-> what the parser expects, so a template download remains the reliable route.
+- Adding a shortcut would mean duplicating a row and editing two path columns, rather
+  than filling one cell.
+- Repeated UUIDs are normal there, so accepting it would force us to drop the
+  duplicate-row check that catches contradictory instructions (§4.3).
+- Removing a shortcut would be expressed by *deleting a row* — indistinguishable from
+  someone pasting only part of the file.
+- Its paths are a different grammar: ` > ` separated, prefixed with the organisation
+  name, suffixed with the process name.
+
+The transform (`csv/processList.ts`) folds placements into one record per process and
+converts the paths. It is pure, costs no API calls, and is verified against a real
+export.
+
+Two details that matter:
+
+- The report's `Short Cut` column (with a space) is a status flag, **not** shortcut
+  data. It must not trip the misspelled-shortcut-column check, or every exported file
+  would be rejected.
+- A shortcut row names its own home in `Source Group Path`, so a process still
+  resolves correctly when the export is filtered and its home row is absent.
+
+Stripping the leading organisation segment is the one genuinely ambiguous step: for an
+export filtered to a single top-level group, that first segment is a real group. The
+transform therefore takes the tenant's actual top-level group names and only strips
+what is not one of them, falling back to a flagged assumption if they are unavailable.
+
+Because every generated row arrives carrying its current shortcuts, an untouched row
+is a no-op **by construction**. Blank still means *no change* rather than *clear*
+(§4.4) so that a hand-made file with sparse columns cannot wipe the tenant, but with a
+seeded file the distinction rarely arises.
+
+**Groups** — still offered as a template (headers plus illustrative rows) and a
+current-state export of every existing path, since there is no equivalent report.
+
+### 4.6 Process names cannot identify processes
+
+Measured against a real 623-row extract from the demo tenant:
+
+| Key | Rows that collide |
+|---|---|
+| Process Name | 308 of 623 (49%) |
+| Process Name + Group Name | 89 |
+| Process Name + full Group Path | **48** |
+
+`Procure Product or Service` alone appears 15 times. Even a fully-qualified path
+leaves 48 ambiguous rows.
+
+This is a property of the tenant's data, not of any particular export, and it is
+decisive: **name-based resolution is not viable**. Every uploaded file must carry
+`Process ID`, and the shortcut CSV's hard error on ambiguity (§4.3) is correct
+behaviour rather than excessive caution.
+
+It also sets a hard requirement on whichever report we build the export from: it must
+emit process UUIDs. A report carrying only names cannot round-trip, however convenient
+it looks.
+
+> Which Process Manager report to source the export from is still open — see
+> [What we still need](#what-we-still-need).
 
 ---
 

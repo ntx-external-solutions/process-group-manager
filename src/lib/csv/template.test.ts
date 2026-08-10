@@ -108,7 +108,7 @@ test('a process with no shortcuts exports as blank cells, meaning no change', ()
 
 test('shortcutHeader numbers columns from one', () => {
   assert.deepEqual(shortcutHeader(2), [
-    'Process ID',
+    'Process Unique Id',
     'Process Name',
     'Current Group',
     'Shortcut 1',

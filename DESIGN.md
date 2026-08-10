@@ -55,9 +55,31 @@ __RequestVerificationToken: <token>
 X-Requested-With: XMLHttpRequest
 ```
 
-Whether the antiforgery token is genuinely required *alongside* a bearer token, or is
-vestigial from requests copied out of the browser, is untested — worth resolving in
-the spike, since scraping it from rendered HTML is the ugliest part of the client.
+✅ **Reads work with the bearer token alone.** Confirmed 2026-08-10 against the demo
+tenant through the deployed proxy: `GetChildProcessGroupTreeItems` returned all 15
+top-level items with an `Authorization: Bearer` header and **no session cookie and no
+antiforgery token**. Nothing needs to be scraped from rendered HTML, and the entire
+read/dry-run path is unblocked.
+
+✅ **Writes need no antiforgery token either.** The
+[Nintex-Process-Manager-Bulk-Operations](https://github.com/ntx-external-solutions/Nintex-Process-Manager-Bulk-Operations)
+PowerShell script performs bulk writes against production tenants, and its
+`Invoke-ApiPost` / `Invoke-ApiPut` helpers send exactly:
+
+```http
+Authorization: Bearer <token>
+Content-Type: application/json
+Accept: application/json
+X-Requested-With: XMLHttpRequest
+```
+
+`__RequestVerificationToken` appears nowhere in it. The token seen in the HAR
+captures is a browser-session artefact, not an API requirement — antiforgery
+validation is tied to cookie authentication and does not apply to bearer-authenticated
+calls.
+
+**The question is closed.** No token scraping is needed anywhere, for reads or writes,
+and `src/lib/pm/antiforgery.ts` is not needed.
 
 A form-login fallback exists (`POST /Login.aspx`). Its payload includes an explicit
 `IsSingleSignOnEnabled` field — see R3.

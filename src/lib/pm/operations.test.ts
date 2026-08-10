@@ -267,3 +267,51 @@ test('submitForApproval reaches the envelope when asked for', async () => {
   });
   assert.equal(JSON.parse(h.calls[1]!.body!).DoSubmitForApproval, true);
 });
+
+// ---------------------------------------------------------------- listing
+
+test('processes.list requires a positive integer page', () => {
+  assert.equal(parseOperation({ op: 'processes.list', page: 0 }).ok, false);
+  assert.equal(parseOperation({ op: 'processes.list', page: 1.5 }).ok, false);
+  assert.equal(parseOperation({ op: 'processes.list', page: '1' }).ok, false);
+  assert.ok(parseOperation({ op: 'processes.list', page: 1 }).ok);
+});
+
+test('processes.list defaults to active processes', () => {
+  const result = parseOperation({ op: 'processes.list', page: 1 });
+  assert.ok(result.ok);
+  assert.deepEqual(result.operation, { op: 'processes.list', page: 1, listType: 0 });
+});
+
+test('processes.list sends the paging parameters the endpoint needs', async () => {
+  const h = harness([{ items: [], totalItemCount: 0 }]);
+  await execute(h.ctx, { op: 'processes.list', page: 3, listType: 7 });
+  assert.match(h.calls[0]!.url, /\/Bff\/Process\/api\/v1\/processes\?/);
+  assert.match(h.calls[0]!.url, /Page=3/);
+  assert.match(h.calls[0]!.url, /PageSize=200/);
+  assert.match(h.calls[0]!.url, /ListType=7/);
+});
+
+test('processes.exportCsv returns the report as text, not parsed JSON', async () => {
+  const csv = 'Process ID,Process Name\n6a9779c8-70b8-45d8-bb36-9de47b9fbf7c,PQL via BDR';
+  const calls: string[] = [];
+  const fetchImpl = (async (url: string | URL) => {
+    calls.push(String(url));
+    return new Response(csv, { status: 200, headers: { 'content-type': 'text/csv' } });
+  }) as unknown as typeof fetch;
+
+  const result = (await execute(
+    { baseUrl: 'https://demo.promapp.com', tenant: 't', token: 'tok', fetch: fetchImpl },
+    { op: 'processes.exportCsv' },
+  )) as { csv: string };
+
+  assert.match(calls[0]!, /\/exports\/api\/v1\/reports\/ProcessListReport\/csv$/);
+  // Parsing this as JSON would throw; the text path is what makes it work.
+  assert.equal(result.csv, csv);
+});
+
+test('processes.exportCsv takes no caller-supplied parameters', () => {
+  const result = parseOperation({ op: 'processes.exportCsv', path: '/anything', url: 'https://evil' });
+  assert.ok(result.ok);
+  assert.deepEqual(result.operation, { op: 'processes.exportCsv' });
+});

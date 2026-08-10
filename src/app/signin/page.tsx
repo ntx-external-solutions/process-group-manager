@@ -7,102 +7,113 @@ interface TreeItem {
   itemType: string;
 }
 
-type Status =
-  | { kind: 'idle' }
-  | { kind: 'working'; what: string }
-  | { kind: 'error'; message: string }
-  | { kind: 'signedIn'; tenant: string; username: string }
-  | { kind: 'verified'; tenant: string; username: string; groups: TreeItem[] };
+interface ActiveSession {
+  tenant: string;
+  username: string;
+}
 
+/**
+ * Session and activity are tracked separately on purpose.
+ *
+ * Folding "working" into the same state as "signed in" means every transient
+ * operation drops the identity, and the sign-in form flashes back mid-request. The
+ * upload, preview, and run screens all have the same shape — a long-lived session
+ * with short-lived activity over it — so the split belongs here from the start.
+ */
 export default function SignInPage() {
   const [site, setSite] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [status, setStatus] = useState<Status>({ kind: 'idle' });
+
+  const [session, setSession] = useState<ActiveSession | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<TreeItem[] | null>(null);
 
   async function signIn(event: React.FormEvent) {
     event.preventDefault();
-    setStatus({ kind: 'working', what: 'Signing in…' });
+    setBusy('Signing in…');
+    setError(null);
 
-    let response: Response;
     try {
-      response = await fetch('/api/auth', {
+      const response = await fetch('/api/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ site, username, password }),
       });
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        tenant?: string;
+        username?: string;
+      };
+
+      if (!response.ok) {
+        setError(payload.error ?? 'Sign-in failed.');
+        return;
+      }
+
+      // Drop the password from component state as soon as it is spent.
+      setPassword('');
+      setSession({ tenant: payload.tenant ?? '', username: payload.username ?? username });
     } catch {
-      setStatus({ kind: 'error', message: 'Could not reach the server.' });
-      return;
+      setError('Could not reach the server.');
+    } finally {
+      setBusy(null);
     }
-
-    const payload = (await response.json().catch(() => ({}))) as {
-      error?: string;
-      tenant?: string;
-      username?: string;
-    };
-
-    if (!response.ok) {
-      setStatus({ kind: 'error', message: payload.error ?? 'Sign-in failed.' });
-      return;
-    }
-
-    // Clear it from component state the moment it is no longer needed.
-    setPassword('');
-    setStatus({
-      kind: 'signedIn',
-      tenant: payload.tenant ?? '',
-      username: payload.username ?? username,
-    });
   }
 
   /**
-   * Reads the top level of the group tree.
+   * Reads the top level of the group tree — a read, nothing more.
    *
-   * This is the open question from DESIGN.md: whether a bearer token alone is enough,
-   * or whether Process Manager also demands an antiforgery token on API calls made
-   * outside its own pages. A successful read here settles it.
+   * Confirms the deployment can authenticate against the tenant and that a bearer
+   * token alone is enough for reads (see DESIGN.md).
    */
   async function testConnection() {
-    if (status.kind !== 'signedIn' && status.kind !== 'verified') return;
-    const { tenant, username: user } = status;
-    setStatus({ kind: 'working', what: 'Reading the group tree…' });
+    setBusy('Reading the group tree…');
+    setError(null);
+    setGroups(null);
 
-    const response = await fetch('/api/pm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ op: 'groups.tree', parentUniqueId: null }),
-    });
-
-    const payload = (await response.json().catch(() => ({}))) as {
-      error?: string;
-      detail?: string;
-      result?: { treeItems?: TreeItem[] | null };
-    };
-
-    if (!response.ok) {
-      setStatus({
-        kind: 'error',
-        message: [payload.error, payload.detail].filter(Boolean).join(' — '),
+    try {
+      const response = await fetch('/api/pm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op: 'groups.tree', parentUniqueId: null }),
       });
-      return;
-    }
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        detail?: string;
+        signedOut?: boolean;
+        result?: { treeItems?: TreeItem[] | null };
+      };
 
-    setStatus({
-      kind: 'verified',
-      tenant,
-      username: user,
-      groups: payload.result?.treeItems ?? [],
-    });
+      if (!response.ok) {
+        setError([payload.error, payload.detail].filter(Boolean).join(' — '));
+        // Only a rejected session should send them back to the form.
+        if (payload.signedOut) setSession(null);
+        return;
+      }
+
+      setGroups(payload.result?.treeItems ?? []);
+    } catch {
+      setError('Could not reach the server.');
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function signOut() {
-    await fetch('/api/auth', { method: 'DELETE' });
-    setStatus({ kind: 'idle' });
+    setBusy('Signing out…');
+    try {
+      await fetch('/api/auth', { method: 'DELETE' });
+    } finally {
+      setSession(null);
+      setGroups(null);
+      setError(null);
+      setBusy(null);
+    }
   }
 
-  const busy = status.kind === 'working';
-  const connected = status.kind === 'signedIn' || status.kind === 'verified';
+  const working = busy !== null;
 
   return (
     <main>
@@ -112,7 +123,7 @@ export default function SignInPage() {
         not stored.
       </p>
 
-      {!connected && (
+      {session === null ? (
         <form onSubmit={signIn} className="panel">
           <label htmlFor="site">Process Manager address</label>
           <input
@@ -121,6 +132,7 @@ export default function SignInPage() {
             onChange={(e) => setSite(e.target.value)}
             placeholder="https://demo.promapp.com/your-tenant"
             autoComplete="url"
+            disabled={working}
             required
           />
 
@@ -130,6 +142,7 @@ export default function SignInPage() {
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             autoComplete="username"
+            disabled={working}
             required
           />
 
@@ -140,53 +153,46 @@ export default function SignInPage() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
+            disabled={working}
             required
           />
 
-          <button type="submit" disabled={busy}>
-            {busy ? 'Working…' : 'Sign in'}
+          <button type="submit" disabled={working}>
+            {working ? busy : 'Sign in'}
           </button>
         </form>
-      )}
-
-      {connected && (
+      ) : (
         <div className="panel">
           <h2>Signed in</h2>
           <p>
-            {status.username} — tenant <code>{status.tenant}</code>
+            {session.username} — tenant <code>{session.tenant}</code>
           </p>
           <div className="row">
-            <button type="button" onClick={testConnection} disabled={busy}>
-              Test connection
+            <button type="button" onClick={testConnection} disabled={working}>
+              {busy === 'Reading the group tree…' ? busy : 'Test connection'}
             </button>
-            <button type="button" className="secondary" onClick={signOut} disabled={busy}>
+            <button type="button" className="secondary" onClick={signOut} disabled={working}>
               Sign out
             </button>
           </div>
         </div>
       )}
 
-      {status.kind === 'working' && (
-        <div className="panel">
-          <p>{status.what}</p>
-        </div>
-      )}
-
-      {status.kind === 'error' && (
+      {error !== null && (
         <div className="panel error">
           <h2>Problem</h2>
-          <p>{status.message}</p>
+          <p>{error}</p>
         </div>
       )}
 
-      {status.kind === 'verified' && (
+      {groups !== null && (
         <div className="panel">
           <h2>Connection works</h2>
           <p>
-            Read {status.groups.length} top-level {status.groups.length === 1 ? 'item' : 'items'}.
+            Read {groups.length} top-level {groups.length === 1 ? 'item' : 'items'}.
           </p>
           <ul className="checklist">
-            {status.groups.slice(0, 10).map((g) => (
+            {groups.slice(0, 10).map((g) => (
               <li key={g.title}>{g.title}</li>
             ))}
           </ul>
