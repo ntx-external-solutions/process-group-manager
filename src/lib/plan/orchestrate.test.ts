@@ -170,7 +170,7 @@ test('fetches process state and plans an update', async () => {
 
   const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},Legal`).rows;
   const groups = new Map([
-    [pathKey(['Legal']), { uniqueId: legal.uniqueId, plannedSeq: null, name: 'Legal', display: 'Legal' }],
+    [pathKey(['Legal']), { uniqueId: legal.uniqueId, id: legal.id, plannedSeq: null, name: 'Legal', display: 'Legal' }],
   ]);
 
   const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groups);
@@ -211,7 +211,7 @@ test('one unreadable process does not abandon the rest of the plan', async () =>
     `Process ID,Shortcut 1\n${PROCESS},Legal\n${other},Legal`,
   ).rows;
   const groups = new Map([
-    [pathKey(['Legal']), { uniqueId: legal.uniqueId, plannedSeq: null, name: 'Legal', display: 'Legal' }],
+    [pathKey(['Legal']), { uniqueId: legal.uniqueId, id: legal.id, plannedSeq: null, name: 'Legal', display: 'Legal' }],
   ]);
 
   const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groups);

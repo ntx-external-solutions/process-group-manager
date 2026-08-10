@@ -178,6 +178,7 @@ export async function resolveShortcutTargets(
       if (planned) {
         resolved.set(key, {
           uniqueId: null,
+          id: null,
           plannedSeq: planned.seq,
           name: planned.name,
           display: planned.display,
@@ -189,6 +190,7 @@ export async function resolveShortcutTargets(
       if (outcome.kind === 'found') {
         resolved.set(key, {
           uniqueId: outcome.node.uniqueId,
+          id: outcome.node.id,
           plannedSeq: null,
           name: outcome.node.title,
           display: segments.join(' | '),

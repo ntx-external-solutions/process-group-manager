@@ -414,7 +414,11 @@ reason, and `clear` rows called out separately.
 
 Five screens, deliberately linear:
 
-1. **Sign in** — tenant, username, password.
+1. **Sign in** — tenant, username, password. This *is* the front page; there is no
+   marketing screen in front of it. Signing in reveals a browsable copy of the tenant's
+   group tree, which doubles as the connection test and as the reference an operator
+   checks their spreadsheet against. Branches load when opened, because the API has no
+   "give me everything" call.
 2. **Choose task** — group structure, or shortcuts. Each offers **Download template**
    and **Download current state** alongside **Upload**.
 3. **Upload & validate** — parse errors inline with row and column numbers, in plain
@@ -428,10 +432,11 @@ Five screens, deliberately linear:
 Non-negotiable: **nothing writes before the preview is shown.** There is no
 "upload and go" path.
 
-Screens 1–4 are built (`/signin`, `/plan`). Screens 2–4 are one page rather than
-three: the plan lives in browser memory and cannot survive a navigation, so splitting
-them would mean either re-planning on every step or persisting customer data
-somewhere. Both are worse than scrolling.
+All five are built (`/signin`, `/plan`). Screens 2–5 are one page rather than four:
+the plan lives in browser memory and cannot survive a navigation, so splitting them
+would mean either re-planning on every step or persisting customer data somewhere.
+Both are worse than scrolling. Apply is driven by the same plan object the preview was
+drawn from, so the two cannot disagree about what is about to happen.
 
 Two decisions that only became obvious once the screens existed:
 
@@ -512,10 +517,25 @@ in a route handler, and in the browser.
 | 5 | Executor + journal + resume | Safe at 1,518 scale |
 | 6 | UI + report | Hands it to a non-technical operator |
 
-Milestones 1–4 and the dry-run half of 6 are done. Milestone 3's "point at the live
-tenant, see a real diff" now happens in the browser rather than a CLI, which is the
-same proof with one fewer thing to build. Everything shipped so far reads; nothing in
-the codebase writes to a tenant.
+All six are done. Milestone 3's "point at the live tenant, see a real diff" happens in
+the browser rather than a CLI, which is the same proof with one fewer thing to build.
+
+Two things the executor decided that this plan had left open:
+
+- **A write whose outcome is unknown is reconciled, never blindly retried.** For a
+  shortcut write the runner re-reads the process and compares it against the file: if
+  the interrupted write landed, only the publish remains. For a group create there is
+  no such check — a second CreateGroup would leave two indistinguishable orphans, and
+  adopting an existing `"New Group"` risks renaming somebody else's — so it reports the
+  uniqueId and the exact manual fix instead of guessing.
+- **A resumed row is reported as `skipped`, not `ok`.** The tenant ends up correct
+  either way, but the report is an audit of *this* run, and a row that says "applied"
+  when nothing was sent is worse than no report at all.
+
+Shortcuts pointing at a group the same run is creating are refused rather than
+resolved: `CreateGroup` returns a uniqueId but no numeric id, and the write payload
+needs both. Apply the group file first, then the shortcut file — which is what the UI
+asks for anyway, since the two tasks are separate uploads.
 
 Milestone 3 is worth reaching fastest — a trustworthy read-only diff against real data
 is what tells us the CSV grammar and matching rules survive contact with names like

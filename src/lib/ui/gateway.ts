@@ -7,9 +7,14 @@
  * call, not an exception.
  */
 
+import type { ExecGateway, SetShortcutsOutput } from '../exec/runner.ts';
 import type { PlanGateway } from '../plan/orchestrate.ts';
 import type { Operation, ProcessSummary } from '../pm/operations.ts';
-import type { ChildTreeItemsResponse } from '../pm/types.ts';
+import type {
+  ChildTreeItemsResponse,
+  CreateGroupResponse,
+  ValidateActionResponse,
+} from '../pm/types.ts';
 
 export class PmRequestError extends Error {
   /** The session is gone. Stop the run and send them back to sign in. */
@@ -65,6 +70,40 @@ export function browserGateway(): PlanGateway {
       callPm<ChildTreeItemsResponse>({ op: 'groups.tree', parentUniqueId }),
     processSummary: (processUniqueId) =>
       callPm<ProcessSummary>({ op: 'process.summary', processUniqueId }),
+  };
+}
+
+/**
+ * The writes, over the same proxy.
+ *
+ * Every one of these is an allowlisted operation — the browser names an operation, not
+ * a URL, so this object cannot reach anything the proxy does not already permit.
+ */
+export function browserExecGateway(): ExecGateway {
+  return {
+    validateGroupAction: (parentUniqueId) =>
+      callPm<ValidateActionResponse>({ op: 'groups.validateCreate', parentUniqueId }),
+    createGroup: (parentUniqueId) =>
+      callPm<CreateGroupResponse>({ op: 'groups.create', parentUniqueId }),
+    renameGroup: (uniqueId, name) => callPm<{ isValid: boolean }>({ op: 'groups.rename', uniqueId, name }),
+    setShortcuts: (input) =>
+      callPm<SetShortcutsOutput>({
+        op: 'process.setShortcuts',
+        processUniqueId: input.processUniqueId,
+        shortcuts: input.shortcuts,
+        changeDescription: input.changeDescription,
+        expectedRevisionEditId: input.expectedRevisionEditId,
+        submitForApproval: input.submitForApproval,
+      }),
+    publish: (processUniqueId, processRevisionEditId) =>
+      callPm({ op: 'process.publish', processUniqueId, processRevisionEditId }),
+    processSummary: (processUniqueId) => callPm<ProcessSummary>({ op: 'process.summary', processUniqueId }),
+    childGroups: async (parentUniqueId) => {
+      const response = await callPm<ChildTreeItemsResponse>({ op: 'groups.tree', parentUniqueId });
+      return (response.treeItems ?? []).filter(
+        (item) => item.itemType === 'group' || item.itemType === 'documentgroup',
+      );
+    },
   };
 }
 

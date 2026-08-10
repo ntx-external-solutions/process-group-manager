@@ -1,21 +1,28 @@
 'use client';
 
 /**
- * Choose a task, upload a file, see exactly what would happen.
+ * Choose a task, upload a file, see exactly what would happen — then apply it.
  *
- * The whole screen is a dry run: it reads Process Manager and writes nothing. That is
- * not a temporary state of the code — PLAN.md §8 makes "nothing writes before the
- * preview is shown" a rule, so applying will be a separate, explicit step behind this
- * one rather than a shortcut around it.
+ * Applying is the only thing on this page that writes, and it is unreachable until a
+ * preview has been rendered: PLAN.md §8 makes "nothing writes before the preview is
+ * shown" a rule, and the Apply button is driven by the same plan object the preview
+ * was drawn from, so the two cannot disagree.
  *
  * Orchestration lives in the browser because there is no data backend and no server
  * job to hold a run: the tab drives every request through the proxy, one at a time.
+ * That makes the tab itself the fragile part, which is what the journal is for.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { classifyCsv } from '@/lib/csv/detect.ts';
 import { parseGroupCsv, type CsvIssue } from '@/lib/csv/groups.ts';
+import { Journal, loadJournal, sessionJournalStore } from '@/lib/exec/journal.ts';
+import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/lib/exec/report.ts';
+import { runPlan, type Outcome, type RunProgress, type RunSummary } from '@/lib/exec/runner.ts';
+import type { GroupPlan } from '@/lib/plan/groupPlan.ts';
+import { findOrphanGroups, type OrphanGroup } from '@/lib/plan/orphans.ts';
+import type { ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
 import { groupTemplate, groupExport, shortcutTemplate } from '@/lib/csv/template.ts';
@@ -29,6 +36,7 @@ import {
 } from '@/lib/plan/orchestrate.ts';
 import { datedFilename, downloadCsv, downloadText } from '@/lib/ui/download.ts';
 import {
+  browserExecGateway,
   browserGateway,
   currentSession,
   PmRequestError,
@@ -49,7 +57,13 @@ import {
   structureToText,
   type StructurePreview,
 } from '@/lib/ui/structure.ts';
-import { GroupPreviewView, IssueList, plural, ShortcutPreviewView } from './parts.tsx';
+import {
+  GroupPreviewView,
+  IssueList,
+  plural,
+  RunResultView,
+  ShortcutPreviewView,
+} from './parts.tsx';
 
 type Task = 'groups' | 'shortcuts';
 
@@ -76,12 +90,46 @@ export default function PlanPage() {
   const [shortcutPreview, setShortcutPreview] = useState<ShortcutPreview | null>(null);
   const [clearsAcknowledged, setClearsAcknowledged] = useState(false);
 
+  // The previews are for reading; these are what actually gets executed. Keeping both
+  // from the same planning pass is what guarantees the run matches what was approved.
+  const [orphans, setOrphans] = useState<OrphanGroup[]>([]);
+  const [groupPlan, setGroupPlan] = useState<GroupPlan | null>(null);
+  const [shortcutPlan, setShortcutPlan] = useState<ShortcutPlan | null>(null);
+
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState<RunProgress | null>(null);
+  const [runSummary, setRunSummary] = useState<RunSummary | null>(null);
+  const [unfinished, setUnfinished] = useState<Journal | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
+    // Read from location rather than useSearchParams, which would force this page
+    // behind a Suspense boundary for no benefit.
+    const wanted = new URLSearchParams(window.location.search).get('task');
+    if (wanted === 'groups' || wanted === 'shortcuts') setTask(wanted);
+
     void currentSession().then((info) => {
       setSession(info);
       setCheckingSession(false);
+      if (!info) return;
+      // A journal that outlived its run means the tab was closed, or the session died,
+      // partway through writing.
+      const store = sessionJournalStore();
+      const previous = store ? loadJournal(store, info.tenant) : null;
+      if (previous && previous.entries().length > 0) setUnfinished(previous);
     });
   }, []);
+
+  /**
+   * The browser's own "are you sure" dialogue, which is the only thing that can
+   * interrupt a close. Registered only while writing.
+   */
+  useEffect(() => {
+    if (!running) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [running]);
 
   const working = busy !== null;
 
@@ -93,8 +141,13 @@ export default function PlanPage() {
     setUnreadable([]);
     setGroupPreview(null);
     setStructure(null);
+    setOrphans([]);
     setShortcutPreview(null);
+    setGroupPlan(null);
+    setShortcutPlan(null);
     setClearsAcknowledged(false);
+    setRunSummary(null);
+    setProgress(null);
   }
 
   function chooseTask(next: Task) {
@@ -198,6 +251,10 @@ export default function PlanPage() {
       setBusy(`Checking which groups already exist… ${event.done} levels`),
     );
     setGroupPreview(buildGroupPreview(plan));
+    setGroupPlan(plan);
+    // Half-made groups from an earlier interrupted attempt. They are invisible to
+    // name matching, so without this the file would create duplicates beside them.
+    setOrphans(findOrphanGroups(tree));
     // The tree is what makes "what will this look like" answerable; the plan alone
     // only knows the paths, not what already sits beside them.
     setStructure(buildStructurePreview(tree, plan));
@@ -229,6 +286,7 @@ export default function PlanPage() {
       })),
     );
     setShortcutPreview(buildShortcutPreview(plan));
+    setShortcutPlan(plan);
   }
 
   async function convertProcessList(text: string) {
@@ -251,6 +309,56 @@ export default function PlanPage() {
     );
   }
 
+  // ------------------------------------------------------------- applying
+
+  async function apply() {
+    if (!session || running) return;
+
+    // Continue an unfinished run rather than starting a fresh journal: steps that
+    // already completed must not be attempted twice.
+    const journal =
+      unfinished ??
+      Journal.start(`run-${Date.now()}`, session.tenant, Date.now(), sessionJournalStore());
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setRunning(true);
+    setError(null);
+    setRunSummary(null);
+    setProgress(null);
+
+    try {
+      const summary = await runPlan(
+        browserExecGateway(),
+        journal,
+        { groupPlan, shortcutPlan },
+        { onProgress: setProgress, signal: controller.signal },
+      );
+
+      setRunSummary(summary);
+      setUnfinished(summary.stopped ? journal : null);
+      // Only a run that finished may forget itself. A stopped one is exactly what the
+      // journal is for.
+      if (!summary.stopped) journal.discard();
+    } catch (cause) {
+      // runPlan reports per-action failures rather than throwing, so reaching here
+      // means something went wrong around the run, not inside it.
+      setUnfinished(journal);
+      handleFailure(cause);
+    } finally {
+      setRunning(false);
+      abortRef.current = null;
+    }
+  }
+
+  function downloadReport() {
+    downloadCsv(
+      datedFilename(groupPlan ? 'group-run-report' : 'shortcut-run-report'),
+      reportToCsv({ outcomes: runSummary?.outcomes ?? [], groupPlan, shortcutPlan }),
+    );
+  }
+
   // ----------------------------------------------------------------- view
 
   if (checkingSession) {
@@ -270,8 +378,8 @@ export default function PlanPage() {
         <div className="panel">
           <h2>Not signed in</h2>
           <p>
-            <a href="/signin">Sign in</a> and come back. Your session is held in a cookie
-            and nothing is stored on the server.
+            <a href="/">Sign in</a> and come back. Your session is held in a cookie and
+            nothing is stored on the server.
           </p>
         </div>
       </main>
@@ -280,14 +388,47 @@ export default function PlanPage() {
 
   const preview = groupPreview ?? shortcutPreview;
   const needsClearAck = shortcutPreview !== null && requiresClearConfirmation(shortcutPreview);
+  const canApply =
+    preview !== null &&
+    !preview.isNoOp &&
+    !running &&
+    runSummary === null &&
+    (!needsClearAck || clearsAcknowledged);
 
   return (
     <main>
+      <p className="crumb">
+        <a href="/">← Your process groups</a>
+      </p>
       <h1>Plan a change</h1>
       <p className="lede">
-        Signed in as {session.username} — tenant <code>{session.tenant}</code>.{' '}
-        <strong>Nothing on this page changes anything</strong> in Process Manager.
+        Signed in as {session.username} — tenant <code>{session.tenant}</code>. Nothing is
+        written until you press Apply.
       </p>
+
+      {unfinished !== null && runSummary === null && (
+        <div className="panel warning">
+          <h2>A previous run in this tab did not finish</h2>
+          <p>
+            Upload the same file again and apply it — anything that already completed is
+            skipped rather than repeated. If you would rather start clean, discard it
+            first; steps that already ran will then be attempted a second time.
+          </p>
+          <div className="row">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                unfinished.discard();
+                setUnfinished(null);
+              }}
+              disabled={running}
+            >
+              Discard that run
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="panel">
         <h2>1. What are you changing?</h2>
@@ -407,7 +548,7 @@ export default function PlanPage() {
       {groupPreview !== null && (
         <>
           <h2 className="section">What would happen</h2>
-          <GroupPreviewView preview={groupPreview} structure={structure} />
+          <GroupPreviewView preview={groupPreview} structure={structure} orphans={orphans} />
         </>
       )}
 
@@ -463,20 +604,67 @@ export default function PlanPage() {
                 type="checkbox"
                 checked={clearsAcknowledged}
                 onChange={(e) => setClearsAcknowledged(e.target.checked)}
+                disabled={running || runSummary !== null}
               />
               I understand that {plural(shortcutPreview?.clears.length ?? 0, 'process')} will
               have every shortcut removed, and that this tool cannot put them back.
             </label>
           )}
 
-          <p className="pending">
-            Applying is not built yet. This release plans and previews only — no version of
-            this tool has ever written to your tenant.
-          </p>
-          <button type="button" disabled>
-            Apply this plan
-          </button>
+          {preview.isNoOp ? (
+            <p className="pending">
+              There is nothing to apply — this file matches what your tenant already has.
+            </p>
+          ) : (
+            <p className="pending">
+              This writes to <code>{session.tenant}</code>. Leave this tab open until it
+              finishes; if it is interrupted, come back and apply the same file again to
+              pick up where it stopped.
+            </p>
+          )}
+
+          <div className="row">
+            <button type="button" onClick={() => void apply()} disabled={!canApply}>
+              {running ? 'Applying…' : 'Apply this plan'}
+            </button>
+            {running && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => abortRef.current?.abort()}
+              >
+                Stop
+              </button>
+            )}
+          </div>
         </div>
+      )}
+
+      {progress !== null && runSummary === null && (
+        <div className="panel">
+          <h2>
+            {progress.phase === 'groups' ? 'Creating groups' : 'Updating processes'} —{' '}
+            {progress.done.toLocaleString()} of {progress.total.toLocaleString()}
+          </h2>
+          <progress value={progress.done} max={Math.max(progress.total, 1)} />
+          <p>{progress.label}</p>
+        </div>
+      )}
+
+      {runSummary !== null && (
+        <>
+          <h2 className="section">What happened</h2>
+          <RunResultView
+            summary={runSummary}
+            counts={summarise({ outcomes: runSummary.outcomes, groupPlan, shortcutPlan })}
+            attention={needsAttention({ outcomes: runSummary.outcomes, groupPlan, shortcutPlan })}
+            onDownload={downloadReport}
+            onStartAgain={() => {
+              resetResults();
+              setFileName(null);
+            }}
+          />
+        </>
       )}
     </main>
   );
