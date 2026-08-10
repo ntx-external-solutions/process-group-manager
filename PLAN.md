@@ -194,31 +194,48 @@ containing `CLEAR` rows lists them as their own category with its own confirmati
 
 ### 4.5 Where the input file comes from
 
-**Shortcuts — the operator uses Process Manager's own Process List export.** It
-already carries `Process Unique Id` for every process, so the workflow is:
+**Shortcuts — Process Manager's Process List export seeds the file; it is not the
+file.** Exported with shortcuts included, that report carries everything needed:
+`Process Unique Id`, and one row per *placement* so shortcuts are visible.
 
-1. Export **Process List** from Process Manager (a report they already know).
-2. Add `Shortcut 1`, `Shortcut 2`, … columns in Excel.
-3. Upload.
+```
+Export Process List (with shortcuts)  →  upload  →  download clean wide-format file,
+current shortcuts pre-filled  →  edit in Excel  →  upload  →  preview  →  apply
+```
 
-The parser accepts that file unmodified: `Process Unique Id` is read as the
-identifier, and the report's other nineteen columns are ignored. No intermediate
-export step from this tool is needed, and there is no second place for the process
-inventory to go stale.
+**Why transform rather than edit the report directly.** It is one row per placement,
+which makes it a poor upload format:
 
-Two details that make it work:
+- Adding a shortcut would mean duplicating a row and editing two path columns, rather
+  than filling one cell.
+- Repeated UUIDs are normal there, so accepting it would force us to drop the
+  duplicate-row check that catches contradictory instructions (§4.3).
+- Removing a shortcut would be expressed by *deleting a row* — indistinguishable from
+  someone pasting only part of the file.
+- Its paths are a different grammar: ` > ` separated, prefixed with the organisation
+  name, suffixed with the process name.
+
+The transform (`csv/processList.ts`) folds placements into one record per process and
+converts the paths. It is pure, costs no API calls, and is verified against a real
+export.
+
+Two details that matter:
 
 - The report's `Short Cut` column (with a space) is a status flag, **not** shortcut
-  data. It must not trip the "misspelled shortcut column" check, or every exported
-  file would be rejected.
-- The report does **not** list current shortcuts. All 722 rows in a real export read
-  `Short Cut: No`, including a process known to have two. So the file describes which
-  processes exist, not their current shortcut state — the plan reads that per process.
+  data. It must not trip the misspelled-shortcut-column check, or every exported file
+  would be rejected.
+- A shortcut row names its own home in `Source Group Path`, so a process still
+  resolves correctly when the export is filtered and its home row is absent.
 
-Because the report omits current shortcuts, an operator editing one row does not
-implicitly carry the other rows' state. This is why blank means *no change* (§4.4)
-rather than *clear*: with this file as the input, any other reading would wipe
-shortcuts across the tenant on the first upload.
+Stripping the leading organisation segment is the one genuinely ambiguous step: for an
+export filtered to a single top-level group, that first segment is a real group. The
+transform therefore takes the tenant's actual top-level group names and only strips
+what is not one of them, falling back to a flagged assumption if they are unavailable.
+
+Because every generated row arrives carrying its current shortcuts, an untouched row
+is a no-op **by construction**. Blank still means *no change* rather than *clear*
+(§4.4) so that a hand-made file with sparse columns cannot wipe the tenant, but with a
+seeded file the distinction rarely arises.
 
 **Groups** — still offered as a template (headers plus illustrative rows) and a
 current-state export of every existing path, since there is no equivalent report.
