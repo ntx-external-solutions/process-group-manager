@@ -11,7 +11,15 @@ import { toCsv } from './parse.ts';
 
 export const GROUP_HEADER = ['Group Path'] as const;
 
-export const SHORTCUT_BASE_HEADER = ['Process ID', 'Process Name', 'Current Group'] as const;
+/**
+ * Named to match Process Manager's own Process List export, so a file downloaded
+ * from the site and a file generated here are interchangeable.
+ */
+export const SHORTCUT_BASE_HEADER = [
+  'Process Unique Id',
+  'Process Name',
+  'Current Group',
+] as const;
 
 /** Default number of Shortcut columns in a generated file. Not a limit — see PLAN.md §4.3. */
 export const DEFAULT_SHORTCUT_COLUMNS = 5;

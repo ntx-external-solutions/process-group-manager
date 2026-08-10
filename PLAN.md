@@ -192,16 +192,36 @@ Blank means "I didn't say", not "delete" — which is what makes a partially-fil
 spreadsheet safe. Removing shortcuts stays possible, but only by saying so. Any plan
 containing `CLEAR` rows lists them as their own category with its own confirmation.
 
-### 4.5 Templates and exports
+### 4.5 Where the input file comes from
 
-Both are offered on every task screen:
+**Shortcuts — the operator uses Process Manager's own Process List export.** It
+already carries `Process Unique Id` for every process, so the workflow is:
 
-- **Template** — headers plus two or three illustrative rows, for starting fresh.
-- **Export** — current state. Groups: every existing path. Shortcuts: every process
-  with UUID, name, home group, and *current* shortcuts, scoped to a chosen subtree.
+1. Export **Process List** from Process Manager (a report they already know).
+2. Add `Shortcut 1`, `Shortcut 2`, … columns in Excel.
+3. Upload.
 
-The export is the recommended path: it removes the "where do I get UUIDs" problem, and
-round-tripping an untouched row is inherently a no-op.
+The parser accepts that file unmodified: `Process Unique Id` is read as the
+identifier, and the report's other nineteen columns are ignored. No intermediate
+export step from this tool is needed, and there is no second place for the process
+inventory to go stale.
+
+Two details that make it work:
+
+- The report's `Short Cut` column (with a space) is a status flag, **not** shortcut
+  data. It must not trip the "misspelled shortcut column" check, or every exported
+  file would be rejected.
+- The report does **not** list current shortcuts. All 722 rows in a real export read
+  `Short Cut: No`, including a process known to have two. So the file describes which
+  processes exist, not their current shortcut state — the plan reads that per process.
+
+Because the report omits current shortcuts, an operator editing one row does not
+implicitly carry the other rows' state. This is why blank means *no change* (§4.4)
+rather than *clear*: with this file as the input, any other reading would wipe
+shortcuts across the tenant on the first upload.
+
+**Groups** — still offered as a template (headers plus illustrative rows) and a
+current-state export of every existing path, since there is no equivalent report.
 
 ### 4.6 Process names cannot identify processes
 
