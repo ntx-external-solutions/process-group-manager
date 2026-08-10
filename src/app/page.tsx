@@ -16,8 +16,16 @@ export default function Home() {
       <div className="panel">
         <h2>Not ready to use</h2>
         <p>
-          This deployment builds the shell only. There is no sign-in yet, and the tool
-          cannot read from or write to any Process Manager tenant.
+          Sign-in and a read-only connection test work. Nothing can yet be uploaded or
+          changed — no CSV can be applied to a tenant from here.
+        </p>
+      </div>
+
+      <div className="panel">
+        <h2>Check the connection</h2>
+        <p>
+          <a href="/signin">Sign in</a> and read the group tree. This only reads, and
+          confirms the deployment can reach your tenant.
         </p>
       </div>
 
@@ -28,16 +36,17 @@ export default function Home() {
           <li>Group-structure planner — create-only, never moves or deletes</li>
           <li>Shortcut planner — replace semantics, with per-process write routing</li>
           <li>Templates and current-state exports</li>
+          <li>Process Manager API client, sign-in, and the allowlisted proxy</li>
         </ul>
       </div>
 
       <div className="panel">
         <h2>Still to come</h2>
         <ul className="checklist">
-          <li>Process Manager API client and the allowlisted proxy routes</li>
-          <li>Sign-in</li>
+          <li>Upload and validate screens</li>
+          <li>Dry-run preview</li>
           <li>Executor with journalling and resume</li>
-          <li>Upload, preview, and run screens</li>
+          <li>Run progress and the audit report</li>
         </ul>
       </div>
 
