@@ -103,6 +103,11 @@ export default function PlanPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    // Read from location rather than useSearchParams, which would force this page
+    // behind a Suspense boundary for no benefit.
+    const wanted = new URLSearchParams(window.location.search).get('task');
+    if (wanted === 'groups' || wanted === 'shortcuts') setTask(wanted);
+
     void currentSession().then((info) => {
       setSession(info);
       setCheckingSession(false);
@@ -373,8 +378,8 @@ export default function PlanPage() {
         <div className="panel">
           <h2>Not signed in</h2>
           <p>
-            <a href="/signin">Sign in</a> and come back. Your session is held in a cookie
-            and nothing is stored on the server.
+            <a href="/">Sign in</a> and come back. Your session is held in a cookie and
+            nothing is stored on the server.
           </p>
         </div>
       </main>
@@ -392,6 +397,9 @@ export default function PlanPage() {
 
   return (
     <main>
+      <p className="crumb">
+        <a href="/">← Your process groups</a>
+      </p>
       <h1>Plan a change</h1>
       <p className="lede">
         Signed in as {session.username} — tenant <code>{session.tenant}</code>. Nothing is

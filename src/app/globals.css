@@ -378,3 +378,56 @@ ul.tree li.hidden-children {
   font-size: 0.82rem;
   font-style: italic;
 }
+
+/* Disclosure rows in the group browser. */
+button.disclosure,
+span.disclosure {
+  display: inline-flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  margin: 0;
+  padding: 0.05rem 0.2rem;
+  font: inherit;
+  font-size: 0.925rem;
+  font-weight: 400;
+  color: var(--fg);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+
+span.disclosure.leaf {
+  cursor: default;
+}
+
+button.disclosure:hover {
+  background: var(--bg);
+  border-color: var(--border);
+}
+
+.disclosure .marker {
+  display: inline-block;
+  width: 0.9em;
+  color: var(--muted);
+  font-size: 0.8em;
+}
+
+.crumb {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+a.button {
+  display: inline-block;
+  margin-top: 1.1rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  text-decoration: none;
+}

@@ -414,7 +414,11 @@ reason, and `clear` rows called out separately.
 
 Five screens, deliberately linear:
 
-1. **Sign in** — tenant, username, password.
+1. **Sign in** — tenant, username, password. This *is* the front page; there is no
+   marketing screen in front of it. Signing in reveals a browsable copy of the tenant's
+   group tree, which doubles as the connection test and as the reference an operator
+   checks their spreadsheet against. Branches load when opened, because the API has no
+   "give me everything" call.
 2. **Choose task** — group structure, or shortcuts. Each offers **Download template**
    and **Download current state** alongside **Upload**.
 3. **Upload & validate** — parse errors inline with row and column numbers, in plain
