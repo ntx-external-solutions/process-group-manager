@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import type { CreateAction, GroupPlan } from '../plan/groupPlan.ts';
 import type { ResolvedGroup, ShortcutChange, ShortcutPlan } from '../plan/shortcutPlan.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
+import type { TreeItem } from '../pm/types.ts';
 import { Journal } from './journal.ts';
 import { runPlan, type ExecGateway, type Outcome, type SetShortcutsInput } from './runner.ts';
 
@@ -22,6 +23,8 @@ interface Harness {
   gateway: ExecGateway;
   calls: Call[];
   ops(): string[];
+  /** Ops that change something. Tree reads are a safety net, not part of the sequence. */
+  writes(): string[];
 }
 
 interface Overrides {
@@ -31,6 +34,49 @@ interface Overrides {
   setShortcuts?: ExecGateway['setShortcuts'];
   publish?: ExecGateway['publish'];
   processSummary?: ExecGateway['processSummary'];
+  childGroups?: ExecGateway['childGroups'];
+}
+
+let treeItemId = 500;
+
+/** A group as the tree endpoint reports it. */
+function item(uniqueId: string, title: string): TreeItem {
+  return {
+    id: treeItemId++,
+    uniqueId,
+    title,
+    itemType: 'group',
+    itemOrder: 0,
+    hasChild: false,
+    totalSubgroups: null,
+    totalStakeholderUsers: null,
+    totalPermissionRoles: null,
+    totalPermissionUsers: null,
+    variationSetId: null,
+  };
+}
+
+/**
+ * A tenant whose group tree actually changes when you write to it — the only way to
+ * exercise orphan recovery, which is entirely about comparing before and after.
+ */
+function liveTree() {
+  const children = new Map<string, Map<string, string>>();
+  const key = (parent: string | null) => parent ?? ' root';
+
+  return {
+    childrenOf: (parent: string | null): TreeItem[] =>
+      [...(children.get(key(parent)) ?? new Map()).entries()].map(([u, t]) => item(u, t)),
+    add: (parent: string | null, uniqueId: string, title: string) => {
+      const map = children.get(key(parent)) ?? new Map<string, string>();
+      map.set(uniqueId, title);
+      children.set(key(parent), map);
+    },
+    rename: (parent: string | null, uniqueId: string, title: string) => {
+      children.get(key(parent))?.set(uniqueId, title);
+    },
+    titleOf: (parent: string | null, uniqueId: string) => children.get(key(parent))?.get(uniqueId),
+  };
 }
 
 function harness(over: Overrides = {}): Harness {
@@ -78,9 +124,14 @@ function harness(over: Overrides = {}): Harness {
       if (over.processSummary) return over.processSummary(id);
       throw new Error('processSummary not stubbed');
     },
+    childGroups: async (parent) => {
+      calls.push({ op: 'childGroups', args: parent });
+      return over.childGroups ? over.childGroups(parent) : [];
+    },
   };
 
-  return { gateway, calls, ops: () => calls.map((c) => c.op) };
+  const ops = () => calls.map((c) => c.op);
+  return { gateway, calls, ops, writes: () => ops().filter((op) => op !== 'childGroups') };
 }
 
 // ------------------------------------------------------------ group plan
@@ -104,7 +155,7 @@ function groupPlan(creates: CreateAction[], blocked: GroupPlan['blocked'] = []):
 test('a group is created and then named, in that order', () => {
   const h = harness();
   return runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) }).then((summary) => {
-    assert.deepEqual(h.ops(), ['validate', 'create', 'rename']);
+    assert.deepEqual(h.writes(), ['validate', 'create', 'rename']);
     assert.equal(summary.outcomes[0]?.result, 'ok');
     assert.equal(summary.outcomes[0]?.targetId, 'new-1');
   });
@@ -205,7 +256,7 @@ test('a server prompt is a skip, not something a bulk run answers', async () => 
 
   const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
   assert.equal(summary.outcomes[0]?.result, 'skipped');
-  assert.deepEqual(h.ops(), ['validate']);
+  assert.deepEqual(h.writes(), ['validate']);
 });
 
 // -------------------------------------------------------------- resuming
@@ -218,7 +269,7 @@ test('a resumed run does not create the same group twice', async () => {
   const second = harness();
   const summary = await runPlan(second.gateway, j, { groupPlan: groupPlan([create()]) });
 
-  assert.deepEqual(second.ops(), [], 'nothing re-sent');
+  assert.deepEqual(second.writes(), [], 'nothing re-sent');
   // Not "ok": the tenant is right, but this run did nothing, and a report that claims
   // otherwise is not an audit log.
   assert.equal(summary.outcomes[0]?.result, 'skipped');
@@ -235,7 +286,7 @@ test('a resumed shortcut row reports that it was carried over, not applied', asy
     shortcutPlan: shortcutPlan({ updates: [change()] }),
   });
 
-  assert.deepEqual(second.ops(), [], 'nothing re-sent');
+  assert.deepEqual(second.writes(), [], 'nothing re-sent');
   assert.equal(summary.outcomes[0]?.result, 'skipped');
   assert.match(summary.outcomes[0]?.detail as string, /Already completed by an earlier run/);
 });
@@ -253,7 +304,7 @@ test('a resume finishes a create whose rename never landed', async () => {
   await runPlan(second.gateway, j, { groupPlan: groupPlan([create()]) });
 
   // Renamed, never re-created.
-  assert.deepEqual(second.ops(), ['rename']);
+  assert.deepEqual(second.writes(), ['rename']);
   assert.deepEqual(second.calls[0]?.args, { uniqueId: 'new-1', name: 'Top' });
 });
 
@@ -265,7 +316,7 @@ test('a create left in doubt is never repeated, and says how to fix it by hand',
   const h = harness();
   const summary = await runPlan(h.gateway, j, { groupPlan: groupPlan([create()]) });
 
-  assert.deepEqual(h.ops(), []);
+  assert.deepEqual(h.writes(), []);
   assert.equal(summary.outcomes[0]?.result, 'skipped');
   assert.match(summary.outcomes[0]?.detail as string, /"New Group" under "the top level"/);
 });
@@ -410,7 +461,7 @@ test('a shortcut pointing at a group this run creates is refused, not guessed at
     }),
   });
 
-  assert.deepEqual(h.ops(), []);
+  assert.deepEqual(h.writes(), []);
   assert.equal(summary.outcomes[0]?.result, 'skipped');
   assert.match(summary.outcomes[0]?.detail as string, /Apply the group file first/);
 });
@@ -462,7 +513,7 @@ test('an interrupted publish is never repeated', async () => {
   const h = harness();
   const summary = await runPlan(h.gateway, j, { shortcutPlan: shortcutPlan({ updates: [change()] }) });
 
-  assert.deepEqual(h.ops(), []);
+  assert.deepEqual(h.writes(), []);
   assert.equal(summary.outcomes[0]?.result, 'failed');
   assert.match(summary.outcomes[0]?.detail as string, /not certain the publish completed/);
 });
@@ -526,7 +577,7 @@ test('groups finish before any shortcut is written', async () => {
     shortcutPlan: shortcutPlan({ updates: [change()] }),
   });
 
-  assert.deepEqual(h.ops(), ['validate', 'create', 'rename', 'setShortcuts', 'publish']);
+  assert.deepEqual(h.writes(), ['validate', 'create', 'rename', 'setShortcuts', 'publish']);
 });
 
 test('a failure in the group phase does not stop the shortcut phase', async () => {
@@ -548,5 +599,262 @@ test('a failure in the group phase does not stop the shortcut phase', async () =
 test('nothing outside the plan is ever touched', async () => {
   const h = harness();
   await runPlan(h.gateway, journal(), { groupPlan: groupPlan([], [{ line: 5, display: 'X', message: 'no' }]) });
-  assert.deepEqual(h.ops(), []);
+  assert.deepEqual(h.writes(), []);
+});
+
+// ------------------------------------------------------- orphan recovery
+
+test('a create that errors but actually landed is recovered, not repeated', async () => {
+  // The product's known failure: creating a lot of groups at once, some report an
+  // error and then turn up named "New Group".
+  const tree = liveTree();
+  let attempts = 0;
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      attempts++;
+      // It made the group, then failed to tell us.
+      tree.add(parent, 'g-orphan', 'New Group');
+      throw new Error('504 Gateway Timeout');
+    },
+    renameGroup: async (uniqueId, name) => {
+      tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+
+  assert.equal(attempts, 1, 'never sent a second create');
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+  assert.equal(summary.outcomes[0]?.targetId, 'g-orphan');
+  assert.match(summary.outcomes[0]?.detail as string, /had in fact been created/);
+  assert.equal(tree.titleOf(null, 'g-orphan'), 'Top', 'the orphan got its real name');
+});
+
+test('a create that genuinely failed is not confused with one that landed', async () => {
+  const tree = liveTree();
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async () => {
+      throw new Error('500');
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  assert.equal(summary.outcomes[0]?.result, 'failed');
+  assert.deepEqual(h.ops().filter((o) => o === 'rename'), [], 'nothing renamed');
+});
+
+test('a placeholder that was already there is never adopted', async () => {
+  // Renaming a group somebody else made would be unrecoverable. Recovery is anchored
+  // to a snapshot taken immediately before the create, so a pre-existing orphan is
+  // visibly not ours.
+  const tree = liveTree();
+  tree.add(null, 'g-someone-elses', 'New Group');
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async () => {
+      throw new Error('504');
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  assert.equal(summary.outcomes[0]?.result, 'failed');
+  assert.equal(tree.titleOf(null, 'g-someone-elses'), 'New Group', 'left alone');
+});
+
+test('two placeholders appearing at once is reported rather than guessed at', async () => {
+  // A concurrent run. Picking one would rename a stranger's group.
+  const tree = liveTree();
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-a', 'New Group');
+      tree.add(parent, 'g-b', 'New Group');
+      throw new Error('504');
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  assert.equal(summary.outcomes[0]?.result, 'failed');
+  assert.equal(tree.titleOf(null, 'g-a'), 'New Group');
+  assert.equal(tree.titleOf(null, 'g-b'), 'New Group');
+});
+
+test('a resume recovers an orphan left by an interrupted create', async () => {
+  const tree = liveTree();
+
+  // First run: the create lands but the tab dies before the response.
+  const j = journal();
+  const first = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-orphan', 'New Group');
+      throw Object.assign(new Error('Not signed in.'), { signedOut: true });
+    },
+  });
+  await runPlan(first.gateway, j, { groupPlan: groupPlan([create()]) });
+
+  // Wipe the commit so the journal looks like it died mid-create.
+  const entries = j.entries().filter((e) => e.phase !== 'commit' && e.phase !== 'fail');
+  const resumed = Journal.start('run-2', 'demo', 2_000, null);
+  for (const entry of entries) resumed.append(entry);
+
+  const second = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    renameGroup: async (uniqueId, name) => {
+      tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+  const summary = await runPlan(second.gateway, resumed, { groupPlan: groupPlan([create()]) });
+
+  assert.equal(second.ops().filter((o) => o === 'create').length, 0, 'no second create');
+  assert.equal(tree.titleOf(null, 'g-orphan'), 'Top');
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+});
+
+// -------------------------------------------------- verifying the names
+
+test('a rename that reports success but does not stick is caught and retried', async () => {
+  // RenameGroup can return 200 without the name taking. A group left as "New Group"
+  // is invisible to the next run, which would then create a second one.
+  const tree = liveTree();
+  let renames = 0;
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-new', 'New Group');
+      return { isValid: true, parentGroupId: parent, groupid: 'g-new', groupName: 'New Group' };
+    },
+    renameGroup: async (uniqueId, name) => {
+      renames++;
+      // The first attempt silently does nothing.
+      if (renames > 1) tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+
+  assert.equal(renames, 2);
+  assert.equal(tree.titleOf(null, 'g-new'), 'Top');
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+  assert.equal(summary.outcomes[0]?.action, 'create.recovered');
+  assert.match(summary.outcomes[0]?.detail as string, /second attempt/);
+});
+
+test('a group that hits both faults keeps the evidence of both', async () => {
+  // The create lies, then the rename lies too. Reporting only the second would hide
+  // half of what this tenant did.
+  const tree = liveTree();
+  let renames = 0;
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-new', 'New Group');
+      throw new Error('504');
+    },
+    renameGroup: async (uniqueId, name) => {
+      renames++;
+      if (renames > 1) tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  const detail = summary.outcomes[0]?.detail as string;
+
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+  assert.match(detail, /had in fact been created/);
+  assert.match(detail, /second attempt/);
+  assert.equal(tree.titleOf(null, 'g-new'), 'Top');
+});
+
+test('a name that will not stick at all is reported with what to do about it', async () => {
+  const tree = liveTree();
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-new', 'New Group');
+      return { isValid: true, parentGroupId: parent, groupid: 'g-new', groupName: 'New Group' };
+    },
+    renameGroup: async () => ({ isValid: true }),
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  assert.equal(summary.outcomes[0]?.result, 'failed');
+  assert.match(summary.outcomes[0]?.detail as string, /still called "New Group"/);
+  assert.match(summary.outcomes[0]?.detail as string, /create a second copy/);
+});
+
+test('an unrelated orphan under a touched parent is reported', async () => {
+  const tree = liveTree();
+  tree.add(null, 'g-old-orphan', 'New Group');
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      tree.add(parent, 'g-new', 'New Group');
+      return { isValid: true, parentGroupId: parent, groupid: 'g-new', groupName: 'New Group' };
+    },
+    renameGroup: async (uniqueId, name) => {
+      tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  const orphan = summary.outcomes.find((o) => o.action === 'orphan.found');
+
+  assert.equal(orphan?.targetId, 'g-old-orphan');
+  assert.match(orphan?.detail as string, /did not create it/);
+});
+
+test('verification costs one read per parent, not one per group', async () => {
+  const tree = liveTree();
+  let created = 0;
+
+  const h = harness({
+    childGroups: async (parent) => tree.childrenOf(parent),
+    createGroup: async (parent) => {
+      created++;
+      const uniqueId = `g-${created}`;
+      tree.add(parent, uniqueId, 'New Group');
+      return { isValid: true, parentGroupId: parent, groupid: uniqueId, groupName: 'New Group' };
+    },
+    renameGroup: async (uniqueId, name) => {
+      tree.rename(null, uniqueId, name);
+      return { isValid: true };
+    },
+  });
+
+  await runPlan(h.gateway, journal(), {
+    groupPlan: groupPlan([
+      create({ seq: 0, path: ['A'], display: 'A', name: 'A' }),
+      create({ seq: 1, path: ['B'], display: 'B', name: 'B' }),
+      create({ seq: 2, path: ['C'], display: 'C', name: 'C' }),
+    ]),
+  });
+
+  const reads = h.ops().filter((o) => o === 'childGroups').length;
+  // Three snapshots before the writes, plus one verification sweep over one parent.
+  assert.equal(reads, 4);
+});
+
+test('a tree that cannot be read degrades rather than blocking the run', async () => {
+  // Losing the safety net is bad; refusing to create anything is worse.
+  const h = harness({
+    childGroups: async () => {
+      throw new Error('tree unavailable');
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
+  assert.equal(summary.outcomes[0]?.result, 'ok');
 });

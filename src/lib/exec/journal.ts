@@ -101,6 +101,21 @@ export class Journal {
     return null;
   }
 
+  /**
+   * Data from the step's most recent entry, whatever phase it reached.
+   *
+   * How a resume recovers what a `begin` recorded — notably the list of groups that
+   * existed before a create was attempted, which is what makes a stray "New Group"
+   * identifiable as ours rather than someone else's.
+   */
+  latestData(step: string): Record<string, string | number | boolean | null> | null {
+    for (let i = this.#entries.length - 1; i >= 0; i--) {
+      const entry = this.#entries[i] as JournalEntry;
+      if (entry.step === step) return entry.data ?? {};
+    }
+    return null;
+  }
+
   /** True when the step reached a terminal phase and must not be attempted again. */
   isSettled(step: string): boolean {
     const phase = this.phaseOf(step);

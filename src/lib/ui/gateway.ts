@@ -98,6 +98,12 @@ export function browserExecGateway(): ExecGateway {
     publish: (processUniqueId, processRevisionEditId) =>
       callPm({ op: 'process.publish', processUniqueId, processRevisionEditId }),
     processSummary: (processUniqueId) => callPm<ProcessSummary>({ op: 'process.summary', processUniqueId }),
+    childGroups: async (parentUniqueId) => {
+      const response = await callPm<ChildTreeItemsResponse>({ op: 'groups.tree', parentUniqueId });
+      return (response.treeItems ?? []).filter(
+        (item) => item.itemType === 'group' || item.itemType === 'documentgroup',
+      );
+    },
   };
 }
 

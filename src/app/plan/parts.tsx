@@ -11,7 +11,8 @@
 
 import type { CsvIssue } from '@/lib/csv/groups.ts';
 import type { ReportSummary } from '@/lib/exec/report.ts';
-import type { Outcome, RunSummary } from '@/lib/exec/runner.ts';
+import { ACTION_RECOVERED, type Outcome, type RunSummary } from '@/lib/exec/runner.ts';
+import type { OrphanGroup } from '@/lib/plan/orphans.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
 
@@ -117,9 +118,11 @@ export function StructureView({ preview }: { preview: StructurePreview }) {
 export function GroupPreviewView({
   preview,
   structure,
+  orphans,
 }: {
   preview: GroupPreview;
   structure: StructurePreview | null;
+  orphans: readonly OrphanGroup[];
 }) {
   return (
     <>
@@ -130,6 +133,28 @@ export function GroupPreviewView({
           { label: 'blocked', value: preview.blocked.length },
         ]}
       />
+
+      {orphans.length > 0 && (
+        <div className="panel warning">
+          <h2>{plural(orphans.length, 'unnamed group')} already in your tenant</h2>
+          <p>
+            Creating a group happens in two steps, and Process Manager is known to drop
+            the second one when many groups are made at once — leaving a group called
+            &ldquo;New Group&rdquo;. This tool matches groups by name, so it cannot see
+            these, and any file naming the same group will create a fresh one beside the
+            half-made one.
+          </p>
+          <p>
+            Rename or delete these in Process Manager first, unless you are happy for the
+            groups below to be created alongside them.
+          </p>
+          <ul className="issues">
+            {orphans.slice(0, MAX_ROWS).map((orphan) => (
+              <li key={orphan.uniqueId}>{orphan.display}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {structure !== null && <StructureView preview={structure} />}
 
@@ -360,6 +385,8 @@ export function RunResultView({
   onDownload: () => void;
   onStartAgain: () => void;
 }) {
+  const recoveries = summary.outcomes.filter((o) => o.action === ACTION_RECOVERED);
+
   return (
     <>
       {summary.stopped && (
@@ -393,6 +420,25 @@ export function RunResultView({
           </button>
         </div>
       </div>
+
+      {recoveries.length > 0 && (
+        <div className="panel warning">
+          <h2>{plural(recoveries.length, 'group')} needed repairing</h2>
+          <p>
+            Process Manager reported these as failed, or reported them renamed when they
+            were not. They were repaired rather than created twice, so your tree is
+            correct — but this is the behaviour that leaves &ldquo;New Group&rdquo;
+            entries behind, so it is worth knowing it happened here.
+          </p>
+          <ul className="issues">
+            {recoveries.slice(0, MAX_ROWS).map((row, i) => (
+              <li key={`${row.targetId ?? row.target}-${i}`}>
+                <strong>{row.target}</strong> — {row.detail}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {attention.length > 0 ? (
         <div className={counts.failed > 0 ? 'panel error' : 'panel warning'}>

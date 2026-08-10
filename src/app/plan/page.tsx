@@ -21,6 +21,7 @@ import { Journal, loadJournal, sessionJournalStore } from '@/lib/exec/journal.ts
 import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/lib/exec/report.ts';
 import { runPlan, type Outcome, type RunProgress, type RunSummary } from '@/lib/exec/runner.ts';
 import type { GroupPlan } from '@/lib/plan/groupPlan.ts';
+import { findOrphanGroups, type OrphanGroup } from '@/lib/plan/orphans.ts';
 import type { ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
@@ -91,6 +92,7 @@ export default function PlanPage() {
 
   // The previews are for reading; these are what actually gets executed. Keeping both
   // from the same planning pass is what guarantees the run matches what was approved.
+  const [orphans, setOrphans] = useState<OrphanGroup[]>([]);
   const [groupPlan, setGroupPlan] = useState<GroupPlan | null>(null);
   const [shortcutPlan, setShortcutPlan] = useState<ShortcutPlan | null>(null);
 
@@ -134,6 +136,7 @@ export default function PlanPage() {
     setUnreadable([]);
     setGroupPreview(null);
     setStructure(null);
+    setOrphans([]);
     setShortcutPreview(null);
     setGroupPlan(null);
     setShortcutPlan(null);
@@ -244,6 +247,9 @@ export default function PlanPage() {
     );
     setGroupPreview(buildGroupPreview(plan));
     setGroupPlan(plan);
+    // Half-made groups from an earlier interrupted attempt. They are invisible to
+    // name matching, so without this the file would create duplicates beside them.
+    setOrphans(findOrphanGroups(tree));
     // The tree is what makes "what will this look like" answerable; the plan alone
     // only knows the paths, not what already sits beside them.
     setStructure(buildStructurePreview(tree, plan));
@@ -534,7 +540,7 @@ export default function PlanPage() {
       {groupPreview !== null && (
         <>
           <h2 className="section">What would happen</h2>
-          <GroupPreviewView preview={groupPreview} structure={structure} />
+          <GroupPreviewView preview={groupPreview} structure={structure} orphans={orphans} />
         </>
       )}
 
