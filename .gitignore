@@ -20,3 +20,6 @@ npm-debug.log*
 # session tokens and must never reach the repo.
 *.har
 /fixtures/live/
+
+# Local editor/agent config
+.claude/

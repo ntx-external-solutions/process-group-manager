@@ -161,3 +161,171 @@ button.secondary {
 a {
   color: var(--accent);
 }
+
+/* ---------------------------------------------------------------- plan */
+
+/* The preview needs more room than a form does. */
+main:has(.counts) {
+  max-width: 68rem;
+}
+
+.panel.warning {
+  border-color: #b4761c;
+}
+
+.panel.warning h2 {
+  color: #b4761c;
+}
+
+h2.section {
+  font-size: 1.15rem;
+  margin: 2.25rem 0 0.75rem;
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.count {
+  flex: 1 1 8rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+}
+
+.count .value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.count .label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.count.loud .value {
+  color: var(--accent);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}
+
+th {
+  text-align: left;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding: 0.35rem 0.6rem 0.35rem 0;
+}
+
+td {
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.6rem 0.5rem 0;
+}
+
+td.muted {
+  color: var(--muted);
+}
+
+td.nowrap {
+  white-space: nowrap;
+}
+
+.small {
+  font-size: 0.82rem;
+}
+
+.diff {
+  font-size: 0.875rem;
+}
+
+.diff .added {
+  color: #1f7a43;
+}
+
+.diff .removed {
+  color: #c2453d;
+}
+
+.diff .kept,
+.truncated,
+.filename {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .diff .added {
+    color: #5cc98a;
+  }
+
+  .diff .removed {
+    color: #e8837c;
+  }
+}
+
+.tag {
+  margin-left: 0.4rem;
+  padding: 0.02rem 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+ul.issues {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.9rem;
+}
+
+ul.issues li {
+  margin: 0.25rem 0;
+}
+
+ul.issues .line {
+  display: inline-block;
+  min-width: 4.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+input[type='file'] {
+  padding: 0.4rem;
+  font-size: 0.9rem;
+}
+
+label.checkbox {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 1rem;
+  font-weight: 400;
+  font-size: 0.9rem;
+}
+
+label.checkbox input {
+  width: auto;
+  margin-top: 0.25rem;
+}
+
+.pending {
+  margin-top: 1rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}

@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 
 import { parseShortcutCsv } from '../csv/shortcuts.ts';
 import { pathKey } from '../csv/path.ts';
-import type { ProcessActions, ProcessRevisionStateId } from '../pm/types.ts';
+import type {
+  ProcessActions,
+  ProcessGroupRef,
+  ProcessRevisionStateId,
+} from '../pm/types.ts';
 import {
   isNoOp,
   planShortcuts,
@@ -16,6 +20,13 @@ import {
 const UUID = '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c';
 const LEGAL = 'grp-legal';
 const FINANCE = 'grp-finance';
+
+let nextGroupId = 1;
+
+/** A shortcut as Process Manager reports it: id, uniqueId, and leaf name. */
+function sc(uniqueId: string, name: string): ProcessGroupRef {
+  return { Id: nextGroupId++, UniqueId: uniqueId, Name: name };
+}
 
 function actions(over: Partial<ProcessActions> = {}): ProcessActions {
   return {
@@ -38,7 +49,7 @@ function snapshot(over: Partial<ProcessSnapshot> = {}): ProcessSnapshot {
     version: '2.0',
     revisionEditId: 9180,
     revisionStateId: 3 as ProcessRevisionStateId,
-    currentShortcutIds: [],
+    currentShortcuts: [],
     actions: actions(),
     canEdit: true,
     ...over,
@@ -101,7 +112,7 @@ test('CLEAR on a process with shortcuts is a clear, kept separate from updates',
     ...deps(),
     resolveProcess: () => ({
       kind: 'found',
-      snapshot: snapshot({ currentShortcutIds: [LEGAL] }),
+      snapshot: snapshot({ currentShortcuts: [sc(LEGAL, 'Compliance')] }),
     }),
   });
   assert.equal(plan.updates.length, 0);
@@ -123,7 +134,7 @@ test('re-applying the same shortcuts writes nothing', () => {
       ...deps(),
       resolveProcess: () => ({
         kind: 'found',
-        snapshot: snapshot({ currentShortcutIds: [FINANCE, LEGAL] }),
+        snapshot: snapshot({ currentShortcuts: [sc(FINANCE, 'Finance'), sc(LEGAL, 'Compliance')] }),
       }),
     },
   );
@@ -138,7 +149,7 @@ test('order of existing shortcuts does not count as a difference', () => {
       ...deps(),
       resolveProcess: () => ({
         kind: 'found',
-        snapshot: snapshot({ currentShortcutIds: [LEGAL, FINANCE] }),
+        snapshot: snapshot({ currentShortcuts: [sc(LEGAL, 'Compliance'), sc(FINANCE, 'Finance')] }),
       }),
     },
   );
@@ -150,7 +161,7 @@ test('dropping one of two shortcuts is an update, not a clear', () => {
     ...deps(),
     resolveProcess: () => ({
       kind: 'found',
-      snapshot: snapshot({ currentShortcutIds: [LEGAL, FINANCE] }),
+      snapshot: snapshot({ currentShortcuts: [sc(LEGAL, 'Compliance'), sc(FINANCE, 'Finance')] }),
     }),
   });
   assert.equal(plan.updates.length, 1);
@@ -253,7 +264,7 @@ test('a not-yet-created group never counts as already-matching', () => {
     resolveGroup: () => ({ uniqueId: null, plannedSeq: 0, name: 'New', display: 'Brand | New' }),
     resolveProcess: () => ({
       kind: 'found',
-      snapshot: snapshot({ currentShortcutIds: ['something'] }),
+      snapshot: snapshot({ currentShortcuts: [sc('something', 'Something')] }),
     }),
   });
   assert.equal(plan.updates.length, 1);

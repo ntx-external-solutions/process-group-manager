@@ -153,9 +153,14 @@ export function withShortcuts(
   };
 }
 
-/** Current shortcut group ids, normalising the null-vs-empty inconsistency. */
-export function currentShortcutIds(processJson: ProcessJson): string[] {
-  return (processJson.ProcessGroupItems.ProcessGroupShortcut ?? []).map((s) => s.UniqueId);
+/**
+ * Current shortcut groups, normalising the null-vs-empty inconsistency.
+ *
+ * Returns the whole reference rather than just the id: a preview that says "removing
+ * 2 shortcuts" is not something anyone can approve, and the name is right here.
+ */
+export function currentShortcuts(processJson: ProcessJson): ProcessGroupRef[] {
+  return (processJson.ProcessGroupItems.ProcessGroupShortcut ?? []).map((s) => ({ ...s }));
 }
 
 // --------------------------------------------------------------- listing

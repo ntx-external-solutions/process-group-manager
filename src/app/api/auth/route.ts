@@ -8,11 +8,36 @@
 
 import { NextResponse } from 'next/server';
 
-import { SESSION_COOKIE, seal, sessionCookieOptions } from '@/lib/auth/session.ts';
+import { readCookie } from '@/lib/auth/cookie.ts';
+import { SESSION_COOKIE, seal, sessionCookieOptions, unseal } from '@/lib/auth/session.ts';
 import { parseSiteAddress, requestToken } from '@/lib/auth/token.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * Report who is signed in.
+ *
+ * The session cookie is httpOnly by design, so a page cannot tell whether it holds a
+ * live session without asking. Deliberately returns identity only — never the token,
+ * and never the base URL, both of which stay sealed inside the cookie.
+ */
+export async function GET(request: Request): Promise<NextResponse> {
+  const secret = process.env['AUTH_SECRET'];
+  if (!secret || secret.length < 32) {
+    return NextResponse.json({ signedIn: false });
+  }
+
+  const session = await unseal(readCookie(request.headers.get('cookie'), SESSION_COOKIE), secret);
+  if (!session) return NextResponse.json({ signedIn: false });
+
+  return NextResponse.json({
+    signedIn: true,
+    tenant: session.tenant,
+    username: session.username,
+    expiresAt: session.expiresAt,
+  });
+}
 
 interface SignInBody {
   site?: unknown;

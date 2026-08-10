@@ -24,7 +24,7 @@ import {
 } from './groups.ts';
 import {
   buildUpdateEnvelope,
-  currentShortcutIds,
+  currentShortcuts,
   exportProcessListCsv,
   getLatestRevision,
   getProcess,
@@ -85,7 +85,7 @@ export interface ProcessSummary {
   revisionStateId: ProcessRevisionStateId;
   homeGroupUniqueId: string;
   homeGroupName: string;
-  currentShortcutIds: string[];
+  currentShortcuts: ProcessGroupRef[];
   canEdit: boolean;
   canSave: boolean;
   canPublishAfterEdit: boolean;
@@ -147,7 +147,7 @@ async function summarise(ctx: PmContext, processUniqueId: string): Promise<Proce
     revisionStateId: processJson.ProcessRevisionStateId,
     homeGroupUniqueId: processJson.ProcessGroupItems.ProcessGroup.UniqueId,
     homeGroupName: processJson.ProcessGroupItems.ProcessGroup.Name,
-    currentShortcutIds: currentShortcutIds(processJson),
+    currentShortcuts: currentShortcuts(processJson),
     // CanSave is the operative permission for what this tool does. EditPermissions
     // exposes a separate CanEdit, but asking for it would double the cost of
     // planning across the whole tenant for no decision we actually make differently.
