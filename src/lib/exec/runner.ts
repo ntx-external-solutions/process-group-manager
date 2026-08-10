@@ -51,6 +51,12 @@ export interface ExecGateway {
   validateGroupAction(parentUniqueId: string | null): Promise<ValidateActionResponse>;
   createGroup(parentUniqueId: string | null): Promise<CreateGroupResponse>;
   renameGroup(uniqueId: string, name: string): Promise<{ isValid: boolean }>;
+  /** Reparent a group. Null parents mean the top level. */
+  moveGroup(
+    uniqueId: string,
+    newParentUniqueId: string | null,
+    oldParentUniqueId: string | null,
+  ): Promise<{ success: boolean; errors: unknown[] | null }>;
   setShortcuts(input: SetShortcutsInput): Promise<SetShortcutsOutput>;
   publish(processUniqueId: string, processRevisionEditId: number): Promise<unknown>;
   /** Used only to work out whether an interrupted write actually landed. */
@@ -233,6 +239,8 @@ async function snapshotChildren(
 const SIBLING_SEPARATOR = ',';
 
 export const ACTION_CREATE = 'create';
+export const ACTION_RENAME = 'rename';
+export const ACTION_MOVE = 'move';
 /**
  * A create that only succeeded because the runner repaired something the tenant got
  * wrong. Distinct from a plain create so it can be counted and shown: it means this
@@ -250,6 +258,13 @@ function readSnapshot(data: Record<string, string | number | boolean | null> | n
 
 // ---------------------------------------------------------------- groups
 
+/**
+ * Rename, create, then move — in that order, and for reasons.
+ *
+ * Renames go first so that a group carries the name the file gives it before anything
+ * is created beside it. Creates come next, because a move may well be putting a group
+ * inside a parent this same run is making. Moves come last, when both ends exist.
+ */
 async function runGroups(
   gateway: ExecGateway,
   journal: Journal,
@@ -257,12 +272,109 @@ async function runGroups(
   outcomes: Outcome[],
   controls: Controls,
 ): Promise<void> {
+  const total =
+    plan.renames.length + plan.creates.length + plan.moves.length;
+  const progress = { done: 0, total };
+
+  await runRenames(gateway, journal, plan, outcomes, controls, progress);
+  if (controls.cancelled()) return;
+
+  const createdBySeq = await runCreates(gateway, journal, plan, outcomes, controls, progress);
+  if (controls.cancelled()) return;
+
+  await runMoves(gateway, journal, plan, outcomes, controls, progress, createdBySeq);
+}
+
+interface GroupProgress {
+  done: number;
+  total: number;
+}
+
+/**
+ * Rename groups that already exist.
+ *
+ * Distinct from the rename that finishes a create: this one acts on a group identified
+ * by its id, and there is no half-made state to recover from — RenameGroup is
+ * idempotent, so an interrupted attempt is safe to repeat.
+ */
+async function runRenames(
+  gateway: ExecGateway,
+  journal: Journal,
+  plan: GroupPlan,
+  outcomes: Outcome[],
+  controls: Controls,
+  progress: GroupProgress,
+): Promise<void> {
+  for (const rename of plan.renames) {
+    if (controls.cancelled()) return;
+
+    controls.onProgress?.({
+      phase: 'groups',
+      done: progress.done,
+      total: progress.total,
+      label: `Renaming ${rename.from}`,
+    });
+    progress.done++;
+
+    const stepName = step.groupRenameById(rename.uniqueId);
+    const record = (result: OutcomeResult, detail: string): void => {
+      outcomes.push({
+        type: 'group',
+        target: rename.fromDisplay,
+        targetId: rename.uniqueId,
+        action: ACTION_RENAME,
+        result,
+        before: rename.from,
+        after: result === 'ok' ? rename.to : '',
+        detail,
+        line: rename.line,
+      });
+    };
+
+    if (journal.isCommitted(stepName)) {
+      record('skipped', 'Already renamed by an earlier run in this tab.');
+      continue;
+    }
+    // A 'begin' with no outcome is safe to repeat here — setting the same name twice
+    // is harmless — so unlike a create, this needs no reconciliation.
+    journal.append({
+      step: stepName,
+      kind: 'group.rename',
+      phase: 'begin',
+      data: { uniqueId: rename.uniqueId },
+    });
+
+    try {
+      await gateway.renameGroup(rename.uniqueId, rename.to);
+      journal.append({
+        step: stepName,
+        kind: 'group.rename',
+        phase: 'commit',
+        data: { uniqueId: rename.uniqueId, name: rename.to },
+      });
+      record('ok', '');
+    } catch (error) {
+      journal.append({ step: stepName, kind: 'group.rename', phase: 'fail' });
+      const fatal = controls.isFatal(error);
+      record('failed', message(error));
+      if (fatal) return controls.stop(fatal);
+    }
+  }
+}
+
+async function runCreates(
+  gateway: ExecGateway,
+  journal: Journal,
+  plan: GroupPlan,
+  outcomes: Outcome[],
+  controls: Controls,
+  progress: GroupProgress,
+): Promise<ReadonlyMap<number, string>> {
   const creates = [...plan.creates].sort((a, b) => a.seq - b.seq);
   /** seq -> uniqueId, so a child can be hung off a parent created moments ago. */
   const createdBySeq = new Map<number, string>();
   /** Creates that reported an error but turned out to have landed. */
   const recovered = new Set<number>();
-  let done = 0;
 
   /** seq -> the row already reported, so the verify sweep can correct it. */
   const reported = new Map<number, Outcome>();
@@ -292,7 +404,7 @@ async function runGroups(
   };
 
   for (const create of creates) {
-    if (controls.cancelled()) return;
+    if (controls.cancelled()) return createdBySeq;
 
     const key = pathKey(create.path);
     const createStep = step.groupCreate(key);
@@ -300,11 +412,11 @@ async function runGroups(
 
     controls.onProgress?.({
       phase: 'groups',
-      done,
-      total: creates.length,
+      done: progress.done,
+      total: progress.total,
       label: create.display,
     });
-    done++;
+    progress.done++;
 
     // Where it hangs from. A planned parent that never got created takes its whole
     // subtree with it — creating the child at the root instead would be worse than
@@ -383,7 +495,10 @@ async function runGroups(
         }
       } catch (error) {
         const fatal = controls.isFatal(error);
-        if (fatal) return controls.stop(fatal);
+        if (fatal) {
+          controls.stop(fatal);
+          return createdBySeq;
+        }
         record(create, 'failed', message(error), null);
         journal.append({ step: createStep, kind: 'group.create', phase: 'fail' });
         continue;
@@ -426,7 +541,10 @@ async function runGroups(
         const orphan = before === null ? null : await findOrphan(gateway, parentUniqueId, before);
 
         if (orphan === null) {
-          if (fatal) return controls.stop(fatal);
+          if (fatal) {
+            controls.stop(fatal);
+            return createdBySeq;
+          }
           record(create, 'failed', message(error), null);
           journal.append({ step: createStep, kind: 'group.create', phase: 'fail' });
           continue;
@@ -471,7 +589,10 @@ async function runGroups(
             `Process Manager before running this file again.`,
           uniqueId,
         );
-        if (fatal) return controls.stop(fatal);
+        if (fatal) {
+          controls.stop(fatal);
+          return createdBySeq;
+        }
         continue;
       }
     }
@@ -496,13 +617,6 @@ async function runGroups(
     }
   }
 
-  controls.onProgress?.({
-    phase: 'groups',
-    done: creates.length,
-    total: creates.length,
-    label: '',
-  });
-
   if (!controls.cancelled()) {
     await verifyNames(gateway, journal, {
       creates,
@@ -513,6 +627,137 @@ async function runGroups(
       controls,
     });
   }
+
+  return createdBySeq;
+}
+
+/**
+ * Reparent groups that already exist.
+ *
+ * Runs last, so a destination this file also creates is there by the time we get here.
+ * A move is a single call that either happened or did not — there is no half-moved
+ * state to recover from — but it is *not* idempotent in a useful sense: repeating one
+ * whose outcome we never learned could reparent a group someone has since moved back.
+ * So an interrupted move is reported rather than retried.
+ */
+async function runMoves(
+  gateway: ExecGateway,
+  journal: Journal,
+  plan: GroupPlan,
+  outcomes: Outcome[],
+  controls: Controls,
+  progress: GroupProgress,
+  createdBySeq: ReadonlyMap<number, string>,
+): Promise<void> {
+  for (const move of plan.moves) {
+    if (controls.cancelled()) return;
+
+    controls.onProgress?.({
+      phase: 'groups',
+      done: progress.done,
+      total: progress.total,
+      label: `Moving ${move.name}`,
+    });
+    progress.done++;
+
+    const stepName = step.groupMove(move.uniqueId);
+    const record = (result: OutcomeResult, detail: string): void => {
+      outcomes.push({
+        type: 'group',
+        target: move.fromDisplay,
+        targetId: move.uniqueId,
+        action: ACTION_MOVE,
+        result,
+        before: move.fromDisplay,
+        after: result === 'ok' ? move.toDisplay : '',
+        detail,
+        line: move.line,
+      });
+    };
+
+    if (journal.isCommitted(stepName)) {
+      record('skipped', 'Already moved by an earlier run in this tab.');
+      continue;
+    }
+    if (journal.phaseOf(stepName) === 'begin') {
+      record(
+        'failed',
+        `An earlier attempt sent this move and never heard back, so it is not certain ` +
+          `whether it happened. Check where "${move.name}" sits in Process Manager ` +
+          `before running this file again.`,
+      );
+      continue;
+    }
+    if (journal.isSettled(stepName)) {
+      record('skipped', 'Already attempted in an earlier run and not retried.');
+      continue;
+    }
+
+    // Where it lands. A destination this run was supposed to create but did not takes
+    // the move with it — moving the group to the top level instead would scatter the
+    // tree rather than restructure it.
+    let newParentUniqueId: string | null = null;
+    if (move.toParent.kind === 'existing') {
+      newParentUniqueId = move.toParent.uniqueId;
+    } else if (move.toParent.kind === 'planned') {
+      const created = createdBySeq.get(move.toParent.seq);
+      if (created === undefined) {
+        record('skipped', `Not moved — its new parent "${move.toParent.display}" was not created.`);
+        continue;
+      }
+      newParentUniqueId = created;
+    }
+
+    journal.append({
+      step: stepName,
+      kind: 'group.move',
+      phase: 'begin',
+      data: { uniqueId: move.uniqueId, to: newParentUniqueId, from: move.fromParentUniqueId },
+    });
+
+    try {
+      const result = await gateway.moveGroup(
+        move.uniqueId,
+        newParentUniqueId,
+        move.fromParentUniqueId,
+      );
+      if (result.success !== true) {
+        // The endpoint answers `{success, errors}` rather than an HTTP status, so a
+        // refusal arrives as a perfectly good 200.
+        throw new Error(
+          describeReorderErrors(result.errors) ?? 'Process Manager refused the move.',
+        );
+      }
+
+      journal.append({
+        step: stepName,
+        kind: 'group.move',
+        phase: 'commit',
+        data: { uniqueId: move.uniqueId, to: newParentUniqueId },
+      });
+      record('ok', '');
+    } catch (error) {
+      journal.append({ step: stepName, kind: 'group.move', phase: 'fail' });
+      const fatal = controls.isFatal(error);
+      record('failed', message(error));
+      if (fatal) return controls.stop(fatal);
+    }
+  }
+
+  controls.onProgress?.({
+    phase: 'groups',
+    done: progress.total,
+    total: progress.total,
+    label: '',
+  });
+}
+
+/** Whatever the server put in `errors`, rendered for someone to read. */
+function describeReorderErrors(errors: unknown[] | null): string | null {
+  if (!errors || errors.length === 0) return null;
+  return errors
+    .map((e) => (typeof e === 'string' ? e : JSON.stringify(e)))
+    .join('; ');
 }
 
 interface VerifyContext {

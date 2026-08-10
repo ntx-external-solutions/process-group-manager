@@ -461,7 +461,8 @@ live walkthrough is **group reparenting**, and that's a HAR, not a conversation.
 | SSO | **Not required.** | ROPC (`grant_type=password`) is viable. R3 downgraded — we still never persist the password, only the exchanged token. |
 | Deletion | **Nothing is ever deleted by the service.** Handled manually; revisit later. | No delete endpoint is wired at all in v1. R4 is neutralised by omission. Groups present in PM but absent from the CSV are reported, never touched. |
 | Shortcut semantics | **The CSV always wins** — authoritative replace. | Desired set replaces current set. See the clearing safeguard in the plan: a row that clears all shortcuts is a *separate, highlighted* category in the dry run, never a silent side effect. Processes absent from the CSV are untouched. |
-| Process re-homing | **Out of scope for v1.** | v1 = group-structure creation + shortcut application only. `ReorderTreeNodes` stays unused, though it is fully mapped for v2. |
+| Process re-homing | **Out of scope.** | A process cannot be moved on its own. A *group* can, and takes its processes with it. |
+| Group re-homing | **Shipped**, gated on the row carrying a `Group Unique Id`. | `ReorderTreeNodes` with `NodeType: "group"`. The group keeps its id, so processes, shortcuts, permissions, and subgroups follow it; no process revision is touched, so nothing republishes and nobody is notified. Cycles, document-group destinations, and ambiguous destinations are refused in the preview. R5 is mitigated as designed — `GetTotalSpecifiedGroupRoleAndUserViewers` runs for both ends of every move and the viewer delta is shown before applying. See PLAN.md §4.2.1. |
 
 Implementation detail lives in **[PLAN.md](PLAN.md)**.
 

@@ -191,3 +191,79 @@ test('the tree renders as indented text', () => {
     ].join('\n'),
   );
 });
+
+/** A fully-loaded little tree, for the restructure cases. */
+function loaded(roots: TreeItem[], levels: Record<string, TreeItem[]>): GroupTree {
+  const t = emptyTree();
+  addLevel(t, null, roots);
+  for (const [parent, kids] of Object.entries(levels)) addLevel(t, parent, kids);
+  return t;
+}
+
+test('a moved group is drawn at its destination, not at both ends', () => {
+  // Drawing it twice would read as a copy rather than a move.
+  const crestan = item('Crestan');
+  const ops = item('Operations');
+  const finance = item('Finance');
+  const t = loaded([crestan, ops], {
+    [crestan.uniqueId]: [finance],
+    [ops.uniqueId]: [],
+    [finance.uniqueId]: [],
+  });
+
+  const preview = buildStructurePreview(t, {
+    creates: [],
+    renames: [],
+    moves: [
+      {
+        uniqueId: finance.uniqueId,
+        name: 'Finance',
+        fromDisplay: 'Crestan | Finance',
+        fromParentUniqueId: crestan.uniqueId,
+        toPath: ['Operations', 'Finance'],
+        toDisplay: 'Operations | Finance',
+        toParent: { kind: 'existing', uniqueId: ops.uniqueId, display: 'Operations' },
+        line: 2,
+      },
+    ],
+    existing: [
+      { path: ['Crestan'], display: 'Crestan', uniqueId: crestan.uniqueId, line: 2 },
+      { path: ['Operations'], display: 'Operations', uniqueId: ops.uniqueId, line: 2 },
+    ],
+    blocked: [],
+  });
+
+  const text = structureToText(preview);
+  assert.match(text, /Operations\n {2}Finance {3}\(moved here\)/);
+  // Gone from where it used to be.
+  assert.equal(/Crestan\n {2}Finance/.test(text), false);
+  assert.equal(preview.movedCount, 1);
+});
+
+test('a renamed group is drawn under its new name', () => {
+  const crestan = item('Crestan');
+  const finance = item('Finance');
+  const t = loaded([crestan], {
+    [crestan.uniqueId]: [finance],
+    [finance.uniqueId]: [],
+  });
+
+  const preview = buildStructurePreview(t, {
+    creates: [],
+    renames: [
+      {
+        uniqueId: finance.uniqueId,
+        fromDisplay: 'Crestan | Finance',
+        from: 'Finance',
+        to: 'Finance & Legal',
+        line: 2,
+      },
+    ],
+    moves: [],
+    existing: [{ path: ['Crestan'], display: 'Crestan', uniqueId: crestan.uniqueId, line: 2 }],
+    blocked: [],
+  });
+
+  assert.match(structureToText(preview), /Finance & Legal {3}\(renamed\)/);
+  assert.equal(preview.renamedCount, 1);
+});

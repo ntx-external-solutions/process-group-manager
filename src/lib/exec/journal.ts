@@ -16,7 +16,12 @@
  * which steps are already done, so a resume never writes the same change twice.
  */
 
-export type ActionKind = 'group.create' | 'group.rename' | 'shortcuts.write' | 'process.publish';
+export type ActionKind =
+  | 'group.create'
+  | 'group.rename'
+  | 'group.move'
+  | 'shortcuts.write'
+  | 'process.publish';
 
 export type Phase =
   /** Sent, outcome unknown. A begin with no terminal phase is the recovery case. */
@@ -215,6 +220,13 @@ export function sessionJournalStore(): JournalStore | null {
 export const step = {
   groupCreate: (pathKey: string): string => `group.create:${pathKey}`,
   groupRename: (pathKey: string): string => `group.rename:${pathKey}`,
+  /**
+   * Keyed by the group's own id rather than by a path, because both of these act on a
+   * group that already exists — and the path it is being given is precisely the thing
+   * that is changing, so it cannot also be the identity.
+   */
+  groupRenameById: (uniqueId: string): string => `group.rename.id:${uniqueId}`,
+  groupMove: (uniqueId: string): string => `group.move:${uniqueId}`,
   shortcuts: (processUniqueId: string): string => `shortcuts:${processUniqueId}`,
   publish: (processUniqueId: string): string => `publish:${processUniqueId}`,
 };

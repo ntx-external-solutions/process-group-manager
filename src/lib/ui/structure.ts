@@ -24,7 +24,7 @@ export interface StructureNode {
   /** Path key, unique within the preview. */
   key: string;
   name: string;
-  status: 'existing' | 'new';
+  status: 'existing' | 'new' | 'renamed' | 'moved';
   isDocumentGroup: boolean;
   /** CSV line that introduced it. Null for groups that already exist. */
   line: number | null;
@@ -39,6 +39,8 @@ export interface StructurePreview {
   roots: StructureNode[];
   /** Groups this run would create. */
   newCount: number;
+  renamedCount: number;
+  movedCount: number;
   /** Everything drawn, new and existing, for a sanity check on size. */
   nodeCount: number;
 }
@@ -60,28 +62,45 @@ export function buildStructurePreview(tree: GroupTree, plan: GroupPlan): Structu
   };
   for (const create of plan.creates) addPrefixes(create.path);
   for (const existing of plan.existing) addPrefixes(existing.path);
+  // Both ends of a move matter: where it lands, and the branch it leaves behind.
+  for (const move of plan.moves) {
+    addPrefixes(move.toPath);
+  }
+
+  /** uniqueId -> the name the file gives it, for groups being renamed. */
+  const renamedTo = new Map(plan.renames.map((r) => [r.uniqueId, r.to]));
+  /** Groups drawn at their destination instead of where they sit today. */
+  const movedAway = new Map(plan.moves.map((m) => [m.uniqueId, m]));
 
   const fromExisting = (nodes: readonly GroupNode[], parentPath: readonly string[]): StructureNode[] => {
     // Descend only through groups the file named; their children are the context.
     const parentKey = pathKey(parentPath);
     if (parentPath.length > 0 && !focus.has(parentKey)) return [];
 
-    return nodes.map((node) => {
-      const path = [...parentPath, node.title];
+    const out: StructureNode[] = [];
+    for (const node of nodes) {
+      // Drawing it here as well as at its destination would show one group twice and
+      // make the tree look like a copy rather than a move.
+      if (movedAway.has(node.uniqueId)) continue;
+
+      // Under the name the file gives it, so the drawing matches the paths in the CSV.
+      const name = renamedTo.get(node.uniqueId) ?? node.title;
+      const path = [...parentPath, name];
       const children = fromExisting(node.children, path);
-      return {
+      out.push({
         key: pathKey(path),
-        name: node.title,
-        status: 'existing' as const,
+        name,
+        status: renamedTo.has(node.uniqueId) ? 'renamed' : 'existing',
         isDocumentGroup: node.isDocumentGroup,
         line: null,
         seq: null,
         children,
         hasHiddenChildren: node.childrenLoaded
-          ? node.children.length > children.length
+          ? node.children.filter((c) => !movedAway.has(c.uniqueId)).length > children.length
           : node.hasChild,
-      };
-    });
+      });
+    }
+    return out;
   };
 
   const roots = fromExisting(tree.roots, []);
@@ -121,9 +140,35 @@ export function buildStructurePreview(tree: GroupTree, plan: GroupPlan): Structu
     byKey.set(node.key, node);
   }
 
+  // After the creates, so a group moving into a group this run makes has somewhere to
+  // land by the time we look for its parent.
+  for (const move of plan.moves) {
+    const source = tree.byUniqueId.get(move.uniqueId);
+    const node: StructureNode = {
+      key: pathKey(move.toPath),
+      name: renamedTo.get(move.uniqueId) ?? move.name,
+      status: 'moved',
+      isDocumentGroup: false,
+      line: move.line,
+      seq: null,
+      // Drawn as a leaf: the subtree travels with it, and redrawing all of it here
+      // would bury the one line that matters.
+      children: [],
+      hasHiddenChildren: source ? source.children.length > 0 || source.hasChild : false,
+    };
+
+    const parentPath = move.toPath.slice(0, -1);
+    const parent = parentPath.length === 0 ? null : byKey.get(pathKey(parentPath));
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+    byKey.set(node.key, node);
+  }
+
   return {
     roots,
     newCount: plan.creates.length,
+    renamedCount: plan.renames.length,
+    movedCount: plan.moves.length,
     nodeCount: byKey.size,
   };
 }
@@ -136,10 +181,17 @@ export function buildStructurePreview(tree: GroupTree, plan: GroupPlan): Structu
  */
 export function structureToText(preview: StructurePreview): string {
   const lines: string[] = [];
+  const SUFFIX: Record<StructureNode['status'], string> = {
+    existing: '',
+    new: '   (new)',
+    renamed: '   (renamed)',
+    moved: '   (moved here)',
+  };
+
   const walk = (nodes: readonly StructureNode[], depth: number): void => {
     for (const node of nodes) {
       const indent = '  '.repeat(depth);
-      const suffix = node.status === 'new' ? '   (new)' : '';
+      const suffix = SUFFIX[node.status];
       lines.push(`${indent}${node.name}${suffix}`);
       walk(node.children, depth + 1);
       if (node.hasHiddenChildren) lines.push(`${indent}  …`);

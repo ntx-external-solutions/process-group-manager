@@ -9,7 +9,7 @@
  */
 
 import { toCsv } from '../csv/parse.ts';
-import type { CreateParent, GroupPlan, PlanIssue } from '../plan/groupPlan.ts';
+import { isNoOp, type CreateParent, type GroupPlan, type PlanIssue } from '../plan/groupPlan.ts';
 import type {
   ResolvedGroup,
   ShortcutChange,
@@ -30,9 +30,43 @@ export interface GroupPreviewRow {
   line: number;
 }
 
+export interface GroupMatchRow {
+  display: string;
+  /** The group the path actually resolved to. */
+  uniqueId: string;
+  line: number;
+}
+
+export interface GroupRenameRow {
+  uniqueId: string;
+  fromDisplay: string;
+  from: string;
+  to: string;
+  line: number;
+}
+
+export interface GroupMoveRow {
+  uniqueId: string;
+  name: string;
+  fromDisplay: string;
+  toDisplay: string;
+  /** True when the destination is a group this same run creates. */
+  intoNewParent: boolean;
+  line: number;
+}
+
 export interface GroupPreview {
   creates: GroupPreviewRow[];
-  /** Paths in the file that already exist. Counted, not listed — they are the boring case. */
+  /**
+   * Kept apart from creates, and from each other. "12 groups changed" is not something
+   * anyone can approve: creating a group adds to the tree, but moving one takes its
+   * processes and its permissions with it, and renaming one changes what everybody
+   * else's links and bookmarks say.
+   */
+  renames: GroupRenameRow[];
+  moves: GroupMoveRow[];
+  /** Paths in the file that already exist. Counted on screen, listed in the download. */
+  existing: GroupMatchRow[];
   existingCount: number;
   blocked: PlanIssue[];
   isNoOp: boolean;
@@ -59,19 +93,65 @@ export function buildGroupPreview(plan: GroupPlan): GroupPreview {
       parentLabel: describeCreateParent(c.parent),
       line: c.line,
     })),
+    renames: [...plan.renames].sort((a, b) => a.line - b.line),
+    moves: [...plan.moves]
+      .sort((a, b) => a.line - b.line)
+      .map((m) => ({
+        uniqueId: m.uniqueId,
+        name: m.name,
+        fromDisplay: m.fromDisplay,
+        toDisplay: m.toDisplay,
+        intoNewParent: m.toParent.kind === 'planned',
+        line: m.line,
+      })),
+    existing: [...plan.existing]
+      .sort((a, b) => a.line - b.line)
+      .map((e) => ({ display: e.display, uniqueId: e.uniqueId, line: e.line })),
     existingCount: plan.existing.length,
     blocked: plan.blocked,
-    isNoOp: plan.creates.length === 0,
+    isNoOp: isNoOp(plan),
   };
 }
 
+/**
+ * The full plan, including the rows that matched something that already exists.
+ *
+ * Those are counted rather than listed on screen — they are the boring case — but they
+ * belong in the downloadable artefact, each with the id its path resolved to. That is
+ * what someone checks when they want to be sure a row pointed at the group they meant,
+ * which is the whole reason the id column exists.
+ */
 export function groupPreviewToCsv(preview: GroupPreview): string {
-  const rows: string[][] = [['Action', 'Group Path', 'Detail', 'CSV Row']];
+  const rows: string[][] = [
+    ['Action', 'Group Path', 'Group Unique Id', 'Detail', 'CSV Row'],
+  ];
   for (const c of preview.creates) {
-    rows.push(['Create', c.display, c.parentLabel, String(c.line)]);
+    // No id yet — it does not exist until the run creates it.
+    rows.push(['Create', c.display, '', c.parentLabel, String(c.line)]);
+  }
+  for (const r of preview.renames) {
+    rows.push([
+      'Rename',
+      r.fromDisplay,
+      r.uniqueId,
+      `"${r.from}" becomes "${r.to}"`,
+      String(r.line),
+    ]);
+  }
+  for (const m of preview.moves) {
+    rows.push([
+      'Move',
+      m.fromDisplay,
+      m.uniqueId,
+      `to ${m.toDisplay}${m.intoNewParent ? ' (new parent)' : ''}`,
+      String(m.line),
+    ]);
+  }
+  for (const e of preview.existing) {
+    rows.push(['Already exists', e.display, e.uniqueId, '', String(e.line)]);
   }
   for (const b of preview.blocked) {
-    rows.push(['Blocked', b.display, b.message, String(b.line)]);
+    rows.push(['Blocked', b.display, '', b.message, String(b.line)]);
   }
   return toCsv(rows);
 }

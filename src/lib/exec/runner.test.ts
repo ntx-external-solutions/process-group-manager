@@ -5,7 +5,7 @@ import type { CreateAction, GroupPlan } from '../plan/groupPlan.ts';
 import type { ResolvedGroup, ShortcutChange, ShortcutPlan } from '../plan/shortcutPlan.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
 import type { TreeItem } from '../pm/types.ts';
-import { Journal } from './journal.ts';
+import { Journal, step } from './journal.ts';
 import { runPlan, type ExecGateway, type Outcome, type SetShortcutsInput } from './runner.ts';
 
 const PROCESS = '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c';
@@ -31,6 +31,7 @@ interface Overrides {
   validateGroupAction?: ExecGateway['validateGroupAction'];
   createGroup?: ExecGateway['createGroup'];
   renameGroup?: ExecGateway['renameGroup'];
+  moveGroup?: ExecGateway['moveGroup'];
   setShortcuts?: ExecGateway['setShortcuts'];
   publish?: ExecGateway['publish'];
   processSummary?: ExecGateway['processSummary'];
@@ -111,6 +112,12 @@ function harness(over: Overrides = {}): Harness {
       calls.push({ op: 'rename', args: { uniqueId, name } });
       return over.renameGroup ? over.renameGroup(uniqueId, name) : { isValid: true };
     },
+    moveGroup: async (uniqueId, newParent, oldParent) => {
+      calls.push({ op: 'move', args: { uniqueId, newParent, oldParent } });
+      return over.moveGroup
+        ? over.moveGroup(uniqueId, newParent, oldParent)
+        : { success: true, errors: [] };
+    },
     setShortcuts: async (input) => {
       calls.push({ op: 'setShortcuts', args: input });
       return over.setShortcuts ? over.setShortcuts(input) : { ok: true, revisionEditId: 9999 };
@@ -149,7 +156,7 @@ function create(over: Partial<CreateAction> = {}): CreateAction {
 }
 
 function groupPlan(creates: CreateAction[], blocked: GroupPlan['blocked'] = []): GroupPlan {
-  return { creates, existing: [], blocked };
+  return { creates, renames: [], moves: [], existing: [], blocked };
 }
 
 test('a group is created and then named, in that order', () => {
@@ -857,4 +864,167 @@ test('a tree that cannot be read degrades rather than blocking the run', async (
 
   const summary = await runPlan(h.gateway, journal(), { groupPlan: groupPlan([create()]) });
   assert.equal(summary.outcomes[0]?.result, 'ok');
+});
+
+// -------------------------------------------------------- renames & moves
+
+function rename(over: Partial<GroupPlan['renames'][number]> = {}): GroupPlan['renames'][number] {
+  return {
+    uniqueId: 'g-finance',
+    fromDisplay: 'Crestan | Finance',
+    from: 'Finance',
+    to: 'Finance & Legal',
+    line: 2,
+    ...over,
+  };
+}
+
+function move(over: Partial<GroupPlan['moves'][number]> = {}): GroupPlan['moves'][number] {
+  return {
+    uniqueId: 'g-finance',
+    name: 'Finance',
+    fromDisplay: 'Crestan | Finance',
+    fromParentUniqueId: 'g-crestan',
+    toPath: ['Operations', 'Finance'],
+    toDisplay: 'Operations | Finance',
+    toParent: { kind: 'existing', uniqueId: 'g-ops', display: 'Operations' },
+    line: 2,
+    ...over,
+  };
+}
+
+test('renames run before creates, and moves after them', () => {
+  // A move may be putting a group inside a parent this same run creates, so the
+  // destination has to exist by the time the move is sent.
+  const h = harness();
+  const plan: GroupPlan = {
+    creates: [create()],
+    renames: [rename()],
+    moves: [move()],
+    existing: [],
+    blocked: [],
+  };
+
+  return runPlan(h.gateway, journal(), { groupPlan: plan }).then(() => {
+    assert.deepEqual(h.writes(), ['rename', 'validate', 'create', 'rename', 'move']);
+  });
+});
+
+test('a move sends both its old and new parent', () => {
+  // ReorderTreeNodes wants OriginalParentUniqueId; without it the server cannot detach
+  // the node from where it was.
+  const h = harness();
+  return runPlan(h.gateway, journal(), {
+    groupPlan: { creates: [], renames: [], moves: [move()], existing: [], blocked: [] },
+  }).then(() => {
+    const sent = h.calls.find((c) => c.op === 'move');
+    assert.deepEqual(sent?.args, {
+      uniqueId: 'g-finance',
+      newParent: 'g-ops',
+      oldParent: 'g-crestan',
+    });
+  });
+});
+
+test('a move into a group this run creates waits for its real id', () => {
+  const h = harness();
+  const plan: GroupPlan = {
+    creates: [create({ seq: 0, path: ['Shared'], display: 'Shared', name: 'Shared' })],
+    renames: [],
+    moves: [
+      move({
+        toParent: { kind: 'planned', seq: 0, display: 'Shared' },
+        toDisplay: 'Shared | Finance',
+      }),
+    ],
+    existing: [],
+    blocked: [],
+  };
+
+  return runPlan(h.gateway, journal(), { groupPlan: plan }).then((summary) => {
+    const sent = h.calls.find((c) => c.op === 'move');
+    // "new-1" is the id the stubbed CreateGroup handed back moments earlier.
+    assert.equal((sent?.args as { newParent: string }).newParent, 'new-1');
+    assert.equal(summary.outcomes.find((o) => o.action === 'move')?.result, 'ok');
+  });
+});
+
+test('a move whose new parent was never created is skipped, not sent to the root', () => {
+  // Moving it to the top level instead would scatter the tree rather than restructure it.
+  const h = harness({
+    createGroup: async () => {
+      throw new Error('nope');
+    },
+  });
+  const plan: GroupPlan = {
+    creates: [create({ seq: 0, path: ['Shared'], display: 'Shared', name: 'Shared' })],
+    renames: [],
+    moves: [move({ toParent: { kind: 'planned', seq: 0, display: 'Shared' } })],
+    existing: [],
+    blocked: [],
+  };
+
+  return runPlan(h.gateway, journal(), { groupPlan: plan }).then((summary) => {
+    assert.equal(h.ops().includes('move'), false);
+    const outcome = summary.outcomes.find((o) => o.action === 'move');
+    assert.equal(outcome?.result, 'skipped');
+    assert.match(outcome?.detail as string, /was not created/);
+  });
+});
+
+test('a refusal that arrives as success:false is reported, not treated as done', () => {
+  // The endpoint answers with a body, not an HTTP status, so a refusal is a 200.
+  const h = harness({
+    moveGroup: async () => ({ success: false, errors: ['Insufficient permission'] }),
+  });
+
+  return runPlan(h.gateway, journal(), {
+    groupPlan: { creates: [], renames: [], moves: [move()], existing: [], blocked: [] },
+  }).then((summary) => {
+    const outcome = summary.outcomes.find((o) => o.action === 'move');
+    assert.equal(outcome?.result, 'failed');
+    assert.match(outcome?.detail as string, /Insufficient permission/);
+  });
+});
+
+test('an interrupted move is reported rather than repeated', () => {
+  // Re-sending one whose outcome we never learned could reparent a group someone has
+  // since put back by hand.
+  const j = journal();
+  j.append({ step: step.groupMove('g-finance'), kind: 'group.move', phase: 'begin' });
+
+  const h = harness();
+  return runPlan(h.gateway, j, {
+    groupPlan: { creates: [], renames: [], moves: [move()], existing: [], blocked: [] },
+  }).then((summary) => {
+    assert.equal(h.ops().includes('move'), false);
+    const outcome = summary.outcomes.find((o) => o.action === 'move');
+    assert.equal(outcome?.result, 'failed');
+    assert.match(outcome?.detail as string, /not certain whether it happened/);
+  });
+});
+
+test('a move already committed in this tab is not sent again', () => {
+  const j = journal();
+  j.append({ step: step.groupMove('g-finance'), kind: 'group.move', phase: 'commit' });
+
+  const h = harness();
+  return runPlan(h.gateway, j, {
+    groupPlan: { creates: [], renames: [], moves: [move()], existing: [], blocked: [] },
+  }).then((summary) => {
+    assert.equal(h.ops().includes('move'), false);
+    assert.equal(summary.outcomes.find((o) => o.action === 'move')?.result, 'skipped');
+  });
+});
+
+test('a rename of an existing group records what it was called before', () => {
+  const h = harness();
+  return runPlan(h.gateway, journal(), {
+    groupPlan: { creates: [], renames: [rename()], moves: [], existing: [], blocked: [] },
+  }).then((summary) => {
+    const outcome = summary.outcomes.find((o) => o.action === 'rename');
+    assert.equal(outcome?.result, 'ok');
+    assert.equal(outcome?.before, 'Finance');
+    assert.equal(outcome?.after, 'Finance & Legal');
+  });
 });

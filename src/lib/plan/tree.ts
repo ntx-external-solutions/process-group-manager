@@ -5,7 +5,7 @@
  * model is built incrementally and knows which nodes have had their children loaded.
  */
 
-import { matchKey } from '../csv/path.ts';
+import { matchKey, pathKey } from '../csv/path.ts';
 import type { TreeItem } from '../pm/types.ts';
 
 export interface GroupNode {
@@ -101,16 +101,40 @@ export type Resolution =
   | { kind: 'unloaded'; depth: number; parent: GroupNode | null };
 
 /**
+ * Paths already pinned to a specific group by a Group Unique Id, keyed by pathKey.
+ *
+ * This is what lets a tenant with two groups of the same name still be worked on: the
+ * id resolves the prefix once, and everything nested below it then walks by name as
+ * normal.
+ */
+export type PathAnchors = ReadonlyMap<string, GroupNode>;
+
+/**
  * Walk a path against the tree.
  *
  * Returns the first thing that stops progress rather than a boolean, because callers
  * need to distinguish "create it here" from "I cannot tell which group you mean".
  */
-export function resolvePath(tree: GroupTree, segments: readonly string[]): Resolution {
+export function resolvePath(
+  tree: GroupTree,
+  segments: readonly string[],
+  anchors?: PathAnchors,
+): Resolution {
   let parent: GroupNode | null = null;
 
   for (let depth = 0; depth < segments.length; depth++) {
     const wanted = matchKey(segments[depth] as string);
+
+    // An id already settled which group this prefix means, so name matching — and the
+    // ambiguity it would hit — is skipped entirely.
+    const anchored = anchors?.get(pathKey(segments.slice(0, depth + 1)));
+    if (anchored) {
+      if (anchored.isDocumentGroup && depth < segments.length - 1) {
+        return { kind: 'documentGroup', depth, node: anchored };
+      }
+      parent = anchored;
+      continue;
+    }
 
     if (parent !== null && !parent.childrenLoaded) {
       return { kind: 'unloaded', depth, parent };
@@ -139,12 +163,60 @@ export function resolvePath(tree: GroupTree, segments: readonly string[]): Resol
   return { kind: 'found', node: parent as GroupNode };
 }
 
-/** Every path in the tree, as display-form segment arrays. Used by the exporter. */
-export function allPaths(tree: GroupTree): string[][] {
-  const out: string[][] = [];
+/**
+ * Where a group currently sits, walked up from the node itself.
+ *
+ * Only meaningful on a fully-loaded tree: every ancestor has to have been read for the
+ * chain to be complete. Returns null when it is not, rather than a truncated path that
+ * would read as a real location.
+ */
+export function pathOf(tree: GroupTree, node: GroupNode): string[] | null {
+  const path: string[] = [];
+  let current: GroupNode | undefined = node;
+
+  // Bounded by the tree's depth; the guard is against a parent chain that loops, which
+  // would otherwise hang the browser tab.
+  for (let hops = 0; current && hops <= 64; hops++) {
+    path.unshift(current.title);
+    if (current.parentUniqueId === null) return path;
+    current = tree.byUniqueId.get(current.parentUniqueId);
+  }
+
+  return null;
+}
+
+/** True when `maybeAncestor` is at or above `node` in the tree. */
+export function isAncestorOf(
+  tree: GroupTree,
+  maybeAncestor: GroupNode,
+  node: GroupNode,
+): boolean {
+  let current: GroupNode | undefined = node;
+  for (let hops = 0; current && hops <= 64; hops++) {
+    if (current.uniqueId === maybeAncestor.uniqueId) return true;
+    if (current.parentUniqueId === null) return false;
+    current = tree.byUniqueId.get(current.parentUniqueId);
+  }
+  return false;
+}
+
+/** A group and where it sits, which is everything the exporter needs. */
+export interface GroupWithPath {
+  uniqueId: string;
+  path: string[];
+}
+
+/**
+ * Every group in the tree with its full path, in tree order.
+ *
+ * Order matters to the exported file: a parent always precedes its children, so a row
+ * carrying an id can anchor the rows nested beneath it.
+ */
+export function allGroups(tree: GroupTree): GroupWithPath[] {
+  const out: GroupWithPath[] = [];
   const walk = (node: GroupNode, prefix: string[]): void => {
     const path = [...prefix, node.title];
-    out.push(path);
+    out.push({ uniqueId: node.uniqueId, path });
     for (const child of node.children) walk(child, path);
   };
   for (const root of tree.roots) walk(root, []);

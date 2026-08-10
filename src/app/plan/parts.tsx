@@ -13,6 +13,7 @@ import type { CsvIssue } from '@/lib/csv/groups.ts';
 import type { ReportSummary } from '@/lib/exec/report.ts';
 import { ACTION_RECOVERED, type Outcome, type RunSummary } from '@/lib/exec/runner.ts';
 import type { OrphanGroup } from '@/lib/plan/orphans.ts';
+import { audienceChanges, type VisibilityReport } from '@/lib/plan/visibility.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
 
@@ -83,9 +84,11 @@ function StructureBranch({ nodes }: { nodes: readonly StructureNode[] }) {
   return (
     <ul className="tree">
       {nodes.map((node) => (
-        <li key={node.key} className={node.status === 'new' ? 'new' : ''}>
+        <li key={node.key} className={node.status === 'existing' ? '' : node.status}>
           <span className="name">{node.name}</span>
           {node.status === 'new' && <span className="tag new">new</span>}
+          {node.status === 'moved' && <span className="tag moved">moved here</span>}
+          {node.status === 'renamed' && <span className="tag renamed">renamed</span>}
           {node.isDocumentGroup && <span className="tag">documents only</span>}
           {node.children.length > 0 && <StructureBranch nodes={node.children} />}
           {node.hasHiddenChildren && (
@@ -105,8 +108,9 @@ export function StructureView({ preview }: { preview: StructurePreview }) {
     <div className="panel">
       <h2>Structure afterwards</h2>
       <p>
-        Your file&rsquo;s branches, with everything already in place around them. New
-        groups are added at the end of their level — this run never reorders anything.
+        Your file&rsquo;s branches, with everything already in place around them. New and
+        moved groups are added at the end of their level — this run never reorders
+        anything. A moved group is drawn only at its destination; its subgroups go with it.
       </p>
       <StructureBranch nodes={preview.roots} />
     </div>
@@ -115,20 +119,94 @@ export function StructureView({ preview }: { preview: StructurePreview }) {
 
 // ------------------------------------------------------------ group plan
 
+/**
+ * Who can see the groups being moved, before and after.
+ *
+ * Permissions are inherited down the tree, so this is the consequence of a move that a
+ * structure diagram cannot show: the shape looks tidier and the readership silently
+ * changed. The numbers are Process Manager's own — it runs the same check after every
+ * move made through its UI.
+ */
+function VisibilityView({ report }: { report: VisibilityReport }) {
+  if (report.moves.length === 0) return null;
+
+  const changed = audienceChanges(report.moves);
+  const unknown = report.moves.filter((m) => m.before === null || m.after === null);
+
+  return (
+    <div className={changed.length > 0 ? 'panel warning' : 'panel'}>
+      <h2>Who can see these groups</h2>
+      {report.unavailable !== null ? (
+        <p>
+          The viewer counts could not be read ({report.unavailable}), so the effect of
+          these moves on visibility is not shown. The plan itself is unaffected — but
+          permissions are inherited down the tree, so check the destinations yourself
+          before applying.
+        </p>
+      ) : changed.length === 0 ? (
+        <p>
+          No move changes the audience: each group lands somewhere with the same viewers
+          and roles as where it sits now.
+          {unknown.length > 0 &&
+            ` ${unknown.length} could not be compared, most likely because the destination does not exist yet.`}
+        </p>
+      ) : (
+        <>
+          <p>
+            {plural(changed.length, 'group')} land somewhere with a different audience.
+            Everything inside them — subgroups and processes alike — follows the
+            destination&rsquo;s permissions, not the ones it has today.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Viewers now</th>
+                <th>Viewers after</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changed.slice(0, MAX_ROWS).map((row) => (
+                <tr key={row.uniqueId}>
+                  <td>{row.name}</td>
+                  <td className="muted">{describeAudience(row.before)}</td>
+                  <td>{describeAudience(row.after)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Truncated shown={MAX_ROWS} total={changed.length} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function describeAudience(count: { users: number; roles: number } | null): string {
+  if (count === null) return 'not known';
+  return `${plural(count.users, 'user')}, ${plural(count.roles, 'role')}`;
+}
+
 export function GroupPreviewView({
   preview,
   structure,
   orphans,
+  visibility,
 }: {
   preview: GroupPreview;
   structure: StructurePreview | null;
   orphans: readonly OrphanGroup[];
+  visibility: VisibilityReport | null;
 }) {
   return (
     <>
       <Counts
         items={[
           { label: 'groups to create', value: preview.creates.length, loud: true },
+          // Loud as well: a move carries a group's processes and permissions with it,
+          // which is a bigger deal than adding an empty group.
+          { label: 'to move', value: preview.moves.length, loud: preview.moves.length > 0 },
+          { label: 'to rename', value: preview.renames.length },
           { label: 'already exist', value: preview.existingCount },
           { label: 'blocked', value: preview.blocked.length },
         ]}
@@ -162,9 +240,77 @@ export function GroupPreviewView({
         <div className="panel">
           <h2>Nothing to do</h2>
           <p>
-            Every group in the file already exists. Applying this would change nothing —
-            which is what you want to see when re-running a file you have already applied.
+            Every group in the file already exists, with the name and in the place the
+            file puts it. Applying this would change nothing — which is what you want to
+            see when re-running a file you have already applied.
           </p>
+        </div>
+      )}
+
+      {preview.moves.length > 0 && (
+        <div className="panel warning">
+          <h2>Groups to move ({preview.moves.length})</h2>
+          <p>
+            Each group keeps its id, so its processes, shortcuts, and stakeholders travel
+            with it — nothing is copied and nothing is republished. Its subgroups move
+            too. Because permissions are inherited down the tree, moving a group can
+            change who can see everything inside it.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Row</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.moves.slice(0, MAX_ROWS).map((row) => (
+                <tr key={row.uniqueId}>
+                  <td>{row.name}</td>
+                  <td className="muted">{row.fromDisplay}</td>
+                  <td>
+                    {row.toDisplay}
+                    {row.intoNewParent && <span className="muted"> (new parent)</span>}
+                  </td>
+                  <td className="muted">{row.line}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Truncated shown={MAX_ROWS} total={preview.moves.length} />
+        </div>
+      )}
+
+      {visibility !== null && <VisibilityView report={visibility} />}
+
+      {preview.renames.length > 0 && (
+        <div className="panel">
+          <h2>Groups to rename ({preview.renames.length})</h2>
+          <p>
+            The group itself is untouched — only its name changes. Anyone who has
+            bookmarked it by name, or written it into a document, will see the new one.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Now</th>
+                <th>Becomes</th>
+                <th>Row</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.renames.slice(0, MAX_ROWS).map((row) => (
+                <tr key={row.uniqueId}>
+                  <td className="muted">{row.fromDisplay}</td>
+                  <td>{row.to}</td>
+                  <td className="muted">{row.line}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <Truncated shown={MAX_ROWS} total={preview.renames.length} />
         </div>
       )}
 

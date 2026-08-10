@@ -45,7 +45,9 @@ export function blockedOutcomes(input: ReportInput): Outcome[] {
       type: 'group',
       target: issue.display,
       targetId: null,
-      action: 'create',
+      // The planner refuses a row before it has decided what the row would have done,
+      // so this is "the group step for this row", not a claim that it was a create.
+      action: 'group',
       result: 'blocked',
       before: '',
       after: '',

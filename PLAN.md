@@ -9,7 +9,8 @@ evidence behind it. This document is what we build from.
 
 **In:**
 
-- **Outcome 1** — create group structure from a CSV of group paths.
+- **Outcome 1** — create group structure from a CSV of group paths, and **rename or
+  move** existing groups from a CSV that carries their ids (§4.2.1).
 - **Outcome 2** — apply group shortcuts to existing processes from a CSV.
 - Downloadable **templates** and **current-state exports**, so users edit reality
   rather than author it blind.
@@ -19,8 +20,10 @@ evidence behind it. This document is what we build from.
 **Out (v1):**
 
 - Deleting or archiving anything.
-- Renaming or **moving** existing groups.
-- Re-homing processes between groups.
+- Re-homing **processes** between groups. (Groups themselves do move — a group takes its
+  processes with it, but a process cannot be moved on its own.)
+- Ordering siblings within a level. `ReorderTreeNodes` carries `Position`, so this rides
+  along for free when we want it; moves currently append.
 - Managing stakeholders, permissions, or approval flows.
 - SSO / federated auth.
 
@@ -136,10 +139,10 @@ Normalisation, applied consistently (R7 in DESIGN.md):
 | Internal whitespace | Runs collapsed to one space **for matching only**. |
 | Case | **Insensitive** for matching. |
 | Creation | Uses the name **exactly as typed** (after outer trim). |
-| `\|` inside a name | **Hard error.** No escaping — we reject rather than guess. |
+| `\|` inside a name | **Hard error** in the `Group Path` column — no escaping, we reject rather than guess. Legal in the one-column-per-level layout, where `\|` separates nothing (§4.2). |
 | Empty segment (`A \|\| B`) | **Hard error.** |
 | Duplicate sibling in the CSV | **Hard error.** |
-| Ambiguous match in PM | **Hard error**, listing the candidates. |
+| Ambiguous match in PM | **Hard error**, listing each candidate's id so the row can be pinned with `Group Unique Id` (§4.2). |
 
 The trim-for-matching / preserve-for-creation split is deliberate: the tenant already
 contains `"Partner Facing "` with a trailing space. We must *match* it without
@@ -147,18 +150,102 @@ recreating it, and never silently rename it.
 
 ### 4.2 Group structure CSV
 
-One column. Header optional (`Group Path` if present). Each row is a full path.
+Each row is one group, written as its **full path**. Two layouts are accepted, and the
+**header row decides which** — never the widest data row, so a three-cell row in a
+one-column file is still caught as commas-where-pipes-were-meant.
+
+**One column per level** — what exports and templates produce:
+
+```csv
+Group Unique Id,Level 1,Level 2,Level 3
+3f240d01-…,Top Group,,
+,Top Group,Secondary Group,
+,Top Group,Secondary Group,Lower Level Group 1
+,Top Group,Secondary Group,Lower Level Group 2
+```
+
+**One `|`-separated column** — the original format, still accepted:
 
 ```csv
 Group Path
 Top Group
 Top Group | Secondary Group
-Top Group | Secondary Group | Lower Level Group 1
-Top Group | Secondary Group | Lower Level Group 2
 ```
+
+Level columns are headed `Level N`, or `Group Path` for the leftmost one — so a file
+exported in the old single-column shape and then split across columns in Excel
+(`Group Path,,`) parses without being re-headed by hand.
 
 Intermediate groups are implied — listing only the leaf creates the whole chain.
 Row order determines creation order; siblings are created in first-appearance order.
+
+| Rule | Behaviour |
+|---|---|
+| Trailing empty level cells | Ignored. Excel pads rows out; the path simply stops. |
+| Gap in the middle (`A,,C`) | **Hard error.** This is the outline style, where blank parents mean "same as the row above" — it silently reparents everything below a deleted or sorted row. |
+| `\|` inside a level cell | **Warning**, and treated as part of the name. Columns carry the nesting, so `\|` is an ordinary character here — but a half-converted file is the likelier explanation, so we say so. |
+
+#### `Group Unique Id`
+
+Optional column, present in every export. It names **which group a row is**, rather
+than trusting the path to pick one out.
+
+| Cell | Meaning |
+|---|---|
+| Blank | Match by path; create if absent. The original behaviour, and the right one for a row someone typed. |
+| An id | *This* group. The name and level columns become the state you want it in — see §4.2.1. |
+| Not a valid id | **Hard error** — never silently downgraded to "no id", which is the exact failure the column prevents. |
+| Id names a group that does not exist | **Hard error.** Never recreated: it was deleted, or the file is stale. |
+
+Rows are resolved by id **before** anything is matched by name, shallowest first, and a
+resolved path is then *pinned*: everything nested below it walks by name as usual. This
+is what makes a tenant containing two sibling groups called `Finance` workable at all —
+without it the path is unresolvable and every descendant is blocked.
+
+Where **two rows carry different ids for the same path** — which a full export of such a
+tenant necessarily contains — both rows are kept and neither pins the path. Re-uploading
+an untouched export stays a no-op; nesting anything new under either half requires
+deleting the row for the one you do not mean.
+
+Lookup is **by id, straight out of the tree index — never by walking the row's path**.
+That is what makes §4.2.1 possible at all: a row asking for a move names a path its
+group is not at yet, and walking it would report the group missing and create a second
+one. It also means an id-bearing file plans against a **fully loaded tree**: a group's
+*current* parent is unknowable without having seen it.
+
+#### 4.2.1 Rename and move
+
+On a row that carries an id, the columns are the **desired state**, not a lookup key:
+
+| What differs | What happens |
+|---|---|
+| Last name column | **Rename.** `RenameGroup`, keyed by id. |
+| Which columns it sits in | **Move.** `ReorderTreeNodes` with `NodeType: "group"` — the group keeps its id, so its processes, shortcuts, stakeholders, and subgroups all travel with it. Publishes nothing, notifies nobody. |
+| Both | Both, as two independent actions. |
+| Nothing | Nothing. Names compare by the §4.1 matching rules, so drifted case or inner spacing does **not** churn a rename. |
+
+Refused outright, in the preview rather than at write time:
+
+- Moving a group **inside its own subgroup** — it would detach the subtree from the
+  tree entirely.
+- Two moves that **only form a cycle in combination** (`A` into `B` while `B` goes into
+  `A`). Each is legal against the tree as it stands, so the check runs against the
+  structure the plan would produce.
+- Moving into a **document-only group**.
+- Moving into a path that **two groups answer to**. Resolved against the tree, not
+  against the create pass's path→id map: that map holds whichever group was seen first,
+  which is good enough to attach a new group to and nowhere near good enough to decide
+  where an existing one goes.
+
+Execution order is **rename → create → move**. Renames first so a group carries its
+intended name before anything is created beside it; creates next, because a move may be
+putting a group inside a parent this same run makes; moves last, when both ends exist.
+
+**Visibility.** Permissions are inherited down the tree, so a move changes the audience
+for everything inside the group — the one consequence a structure diagram cannot show.
+The dry run calls `GetTotalSpecifiedGroupRoleAndUserViewers` for the source and
+destination of every move and reports the before/after viewer counts (DESIGN.md R5).
+Advisory: if the counts cannot be read, the plan is unaffected and the preview says so.
 
 ### 4.3 Shortcut CSV
 
@@ -273,18 +360,25 @@ The planner never writes. It is a pure function of (existing state, parsed CSV) 
 `Plan`, which is what makes it testable without a tenant. The UI renders that object
 and the executor consumes the same one, so the preview is exactly what runs.
 
-### 5.1 Group plan (create-only)
+### 5.1 Group plan
 
-1. Read the existing tree breadth-first via `GetChildProcessGroupTreeItems`, cache it.
-2. For each CSV path, walk segment by segment from the root, matching children on
-   normalised name.
-3. First missing segment and everything below it → `create` actions.
-4. **Never** move, rename, or delete. A group existing at a *different* parent is
-   reported as informational — full-path matching means it is simply a different node.
+1. Read the existing tree via `GetChildProcessGroupTreeItems` — one branch at a time for
+   a file of bare paths, in full when any row carries an id (§4.2).
+2. Resolve every id-bearing row **by id**, before any name matching. A resolved path is
+   then pinned, so rows nested under it walk by name without hitting an ambiguity.
+3. For each remaining path, walk segment by segment from the root, matching children on
+   normalised name. First missing segment and everything below it → `create` actions.
+4. For id-bearing rows, compare the group's actual name and parent against the row's
+   columns → `rename` and `move` actions (§4.2.1).
+5. **Never delete.** A group absent from the CSV is reported as untouched, never
+   removed. A row without an id never moves or renames anything — without an id, a path
+   *is* the identity, so "not there" means "create it".
 
 ```ts
 type GroupAction =
   | { kind: 'create'; path: string[]; name: string; parentUniqueId: string | null }
+  | { kind: 'rename'; uniqueId: string; from: string; to: string }
+  | { kind: 'move'; uniqueId: string; toParent: CreateParent }
   | { kind: 'exists'; path: string[]; uniqueId: string };
 ```
 
@@ -477,7 +571,7 @@ src/
     template.ts      template + current-state CSV generation
   lib/plan/
     tree.ts          existing-tree model
-    groupPlan.ts     create-only planner
+    groupPlan.ts     create / rename / move planner
     shortcutPlan.ts  replace planner + write-path selection
   lib/exec/
     journal.ts       append-only log, replay

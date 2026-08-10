@@ -183,6 +183,8 @@ test('a top-level group says so rather than showing an empty parent', () => {
 
 test('the group preview counts existing paths without listing them', () => {
   const plan: GroupPlan = {
+    renames: [],
+    moves: [],
     creates: [
       {
         seq: 0,
@@ -235,6 +237,8 @@ test('the shortcut plan downloads as a reviewable CSV', () => {
 
 test('the group plan downloads as a reviewable CSV', () => {
   const preview = buildGroupPreview({
+    renames: [],
+    moves: [],
     creates: [
       {
         seq: 0,
@@ -245,11 +249,22 @@ test('the group plan downloads as a reviewable CSV', () => {
         line: 2,
       },
     ],
-    existing: [],
+    existing: [
+      { path: ['Finance'], display: 'Finance', uniqueId: 'aaaaaaaa-1111-2222-3333-444444444444', line: 3 },
+    ],
     blocked: [{ line: 5, display: 'Bad | Path', message: 'Matches 2 existing groups.' }],
   });
 
   const grid = parseCsv(groupPreviewToCsv(preview));
-  assert.deepEqual(grid[1], ['Create', 'Top', 'at the top level', '2']);
-  assert.deepEqual(grid[2], ['Blocked', 'Bad | Path', 'Matches 2 existing groups.', '5']);
+  assert.deepEqual(grid[1], ['Create', 'Top', '', 'at the top level', '2']);
+  // The id a matched row resolved to is the point of the column: it is how someone
+  // checks that a path pointed at the group they meant.
+  assert.deepEqual(grid[2], [
+    'Already exists',
+    'Finance',
+    'aaaaaaaa-1111-2222-3333-444444444444',
+    '',
+    '3',
+  ]);
+  assert.deepEqual(grid[3], ['Blocked', 'Bad | Path', '', 'Matches 2 existing groups.', '5']);
 });
