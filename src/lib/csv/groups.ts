@@ -211,7 +211,7 @@ function readColumns(
         ok: false,
         error:
           `Row ${line} has an empty level ${i + 1} but a name in level ${raw.length}. ` +
-          `Write the full path on every row — repeat the parent names rather than ` +
+          `Write the full path on every row. Repeat the parent names rather than ` +
           `leaving them blank.`,
       };
     }

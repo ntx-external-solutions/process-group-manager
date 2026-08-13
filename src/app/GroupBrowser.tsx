@@ -54,7 +54,7 @@ export function GroupBrowser({ onSignedOut }: { onSignedOut: () => void }) {
   const fail = useCallback(
     (cause: unknown) => {
       if (cause instanceof PmRequestError) {
-        setError([cause.message, cause.detail].filter(Boolean).join(' — '));
+        setError([cause.message, cause.detail].filter(Boolean).join(': '));
         if (cause.signedOut) onSignedOut();
         return;
       }
@@ -190,7 +190,7 @@ export function GroupBrowser({ onSignedOut }: { onSignedOut: () => void }) {
       <h2>Your process groups</h2>
       <p>
         {rootIds.length.toLocaleString()} top-level {rootIds.length === 1 ? 'group' : 'groups'}.
-        Open one to see what is inside — this only reads.
+        Open one to see what is inside. This only reads.
       </p>
       {branch(rootIds)}
       {error !== null && <p className="truncated">{error}</p>}

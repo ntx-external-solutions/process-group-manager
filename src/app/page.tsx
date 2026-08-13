@@ -63,15 +63,18 @@ export default function Home() {
     <main>
       <h1>Process Group Manager</h1>
       <p className="lede">
-        Signed in as {session.username} — tenant <code>{session.tenant}</code>.
+        Signed in as {session.username} on tenant <code>{session.tenant}</code>.
       </p>
 
       <div className="panel">
         <h2>What would you like to do?</h2>
-        <p>
-          Both start the same way: download or build a CSV, upload it, and see exactly
-          what would change before anything is written.
-        </p>
+        <p>Both jobs work the same way:</p>
+        <ul className="checklist">
+          <li>Download or build a CSV.</li>
+          <li>Upload it.</li>
+          <li>Check what would change.</li>
+          <li>Apply it. Nothing is written before that.</li>
+        </ul>
         <div className="row">
           <a className="button" href="/plan?task=groups">
             Update groups

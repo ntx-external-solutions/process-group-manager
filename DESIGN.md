@@ -437,15 +437,19 @@ array with no cap visible anywhere in the API. A five-column schema bakes in an
 arbitrary number and makes raising it a breaking change to every CSV customers have
 already built.
 
-Keep the Excel-friendly wide layout, but parse *every* column matching `Shortcut N`:
+The format shipped wide (`Shortcut 1`, `Shortcut 2`, … parsed however many there were)
+and was then **replaced by one row per shortcut**, addressed by group id:
 
 ```csv
-Process ID,Process Name,Shortcut 1,Shortcut 2,Shortcut 3
-6a9779c8-…,(draft) PQL via BDR,Legal | Compliance,Finance & IT | Finance,
+Process Unique Id,Process Name,Group Unique Id,Action
+6a9779c8-…,(draft) PQL via BDR,3f240d01-…,Add
+6a9779c8-…,(draft) PQL via BDR,3c42fbb0-…,Add
 ```
 
+The column count stops being a question entirely, and the change was forced by R7
+rather than by the cap: paths could not identify a group on a tenant where names repeat.
 Enforce whatever limit the UI turns out to impose as a validation error, discovered at
-runtime. Then we never have to reissue the format.
+runtime.
 
 ### Postman collection, or walk the APIs one by one?
 
@@ -460,7 +464,9 @@ live walkthrough is **group reparenting**, and that's a HAR, not a conversation.
 |---|---|---|
 | SSO | **Not required.** | ROPC (`grant_type=password`) is viable. R3 downgraded — we still never persist the password, only the exchanged token. |
 | Deletion | **Nothing is ever deleted by the service.** Handled manually; revisit later. | No delete endpoint is wired at all in v1. R4 is neutralised by omission. Groups present in PM but absent from the CSV are reported, never touched. |
-| Shortcut semantics | **The CSV always wins** — authoritative replace. | Desired set replaces current set. See the clearing safeguard in the plan: a row that clears all shortcuts is a *separate, highlighted* category in the dry run, never a silent side effect. Processes absent from the CSV are untouched. |
+| Shortcut semantics | **Additive.** A row adds the group it names; nothing is removed unless a row says so. | Revised from authoritative-replace once the file became one row per (process, group) pair: under replace, a hand-written file listing two additions would silently strip every other shortcut those processes had. `Remove` takes one away, `CLEAR` takes them all. A change ending with no shortcuts is a *separate, highlighted* category in the dry run, never a silent side effect. Processes absent from the file are untouched. |
+| Shortcut addressing | **Group `UniqueId`, never a path.** | Group names repeat across branches (R7), so a path resolved to the wrong group often enough to be untrustworthy. The group-hierarchy download supplies the ids. Consequence: a shortcut cannot target a group the same run creates, because it has no id yet. |
+| Publishing | **The operator chooses, once per run.** Default: save without publishing. | Drafts (0.x) and in-progress revisions (x.y) are only ever saved. For published processes the choice is republish (major bump, live now) or save (a draft on top of the live version). Both have a cost, so neither is assumed. The choice re-plans, since it changes which processes are blocked as well as how they are written. |
 | Process re-homing | **Out of scope.** | A process cannot be moved on its own. A *group* can, and takes its processes with it. |
 | Group re-homing | **Shipped**, gated on the row carrying a `Group Unique Id`. | `ReorderTreeNodes` with `NodeType: "group"`. The group keeps its id, so processes, shortcuts, permissions, and subgroups follow it; no process revision is touched, so nothing republishes and nobody is notified. Cycles, document-group destinations, and ambiguous destinations are refused in the preview. R5 is mitigated as designed — `GetTotalSpecifiedGroupRoleAndUserViewers` runs for both ends of every move and the viewer delta is shown before applying. See PLAN.md §4.2.1. |
 

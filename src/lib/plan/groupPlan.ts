@@ -533,8 +533,8 @@ function anchorById(tree: GroupTree, rows: readonly GroupCsvRow[]): IdPass {
         line: row.line,
         display: row.display,
         message:
-          `"${node.title}" is a document-only group. This tool does not manage those — ` +
-          `remove the row, or convert it in Process Manager.`,
+          `"${node.title}" is a document-only group. This tool does not manage those. ` +
+          `Remove the row, or convert it in Process Manager.`,
       });
       continue;
     }

@@ -23,23 +23,43 @@ export function groupHeader(levels = MIN_GROUP_LEVELS): string[] {
 }
 
 /**
- * Named to match Process Manager's own Process List export, so a file downloaded
- * from the site and a file generated here are interchangeable.
+ * The shortcut upload format: one row per (process, group) pair.
+ *
+ * `Process Unique Id` is named to match Process Manager's own Process List export, so
+ * a column copied from the site drops straight in. `Group Unique Id` is the same
+ * column the group hierarchy download emits — that file is the lookup table for this
+ * one, which is why the two agree on the name.
  */
-export const SHORTCUT_BASE_HEADER = [
+export const SHORTCUT_HEADER = [
+  'Process Unique Id',
+  'Process Name',
+  'Group Unique Id',
+  'Action',
+] as const;
+
+/**
+ * The same file with the operator's bearings added.
+ *
+ * `Current Group` and `Current Shortcuts` are ignored on upload. They exist so that
+ * someone editing a 1,518-row sheet can see what a process already has without
+ * cross-referencing a second file — the ids are unreadable, and a shortcut file whose
+ * rows cannot be sanity-checked by eye is one nobody can review.
+ */
+export const SHORTCUT_WORKSHEET_HEADER = [
   'Process Unique Id',
   'Process Name',
   'Current Group',
+  'Current Shortcuts',
+  'Group Unique Id',
+  'Action',
 ] as const;
 
-/** Default number of Shortcut columns in a generated file. Not a limit — see PLAN.md §4.3. */
-export const DEFAULT_SHORTCUT_COLUMNS = 5;
+export function shortcutHeader(): string[] {
+  return [...SHORTCUT_HEADER];
+}
 
-export function shortcutHeader(columns = DEFAULT_SHORTCUT_COLUMNS): string[] {
-  return [
-    ...SHORTCUT_BASE_HEADER,
-    ...Array.from({ length: columns }, (_, i) => `Shortcut ${i + 1}`),
-  ];
+export function shortcutWorksheetHeader(): string[] {
+  return [...SHORTCUT_WORKSHEET_HEADER];
 }
 
 /**
@@ -84,39 +104,58 @@ export interface ShortcutExportRow {
   processName: string;
   /** Full path of the process's home group. */
   currentGroup: string;
-  /** Full paths of the process's current shortcuts. */
-  shortcuts: string[];
+  /** The process's current shortcuts. */
+  shortcuts: ReadonlyArray<{ uniqueId: string; display: string }>;
 }
 
-/** Blank shortcut template. */
-export function shortcutTemplate(columns = DEFAULT_SHORTCUT_COLUMNS): string {
-  const width = shortcutHeader(columns).length;
-  const example = [
-    '00000000-0000-0000-0000-000000000000',
-    'Example process — replace this row',
-    'Existing | Home Group',
-    'Top Group | Secondary Group',
-  ];
-  return toCsv([shortcutHeader(columns), pad(example, width)]);
+const SHORTCUT_LIST_JOIN = '; ';
+
+/**
+ * Blank shortcut template.
+ *
+ * Two rows for one process, because that is the part of the format people get wrong:
+ * a process wanting three shortcuts gets three rows, not three columns.
+ */
+export function shortcutTemplate(): string {
+  const header = shortcutHeader();
+  const process = '00000000-0000-0000-0000-000000000000';
+  return toCsv([
+    header,
+    [process, 'Example process, replace this row', '11111111-1111-1111-1111-111111111111', 'Add'],
+    [process, 'Example process, replace this row', '22222222-2222-2222-2222-222222222222', 'Add'],
+    [process, 'Example process, replace this row', '33333333-3333-3333-3333-333333333333', 'Remove'],
+  ]);
 }
 
 /**
- * Current state for a set of processes.
+ * Current state for a set of processes, as rows that re-apply what is already there.
  *
- * The file is always wide enough for the process with the most shortcuts, so an
- * export never truncates what it is describing.
+ * Every row is an `Add` of a shortcut the process already has, so an untouched export
+ * round-trips to no change at all. A process with no shortcuts still gets a row, with
+ * an empty group, so the file lists every process the operator might want to edit
+ * rather than only the ones already shortcut somewhere.
  */
-export function shortcutExport(
-  rows: readonly ShortcutExportRow[],
-  minColumns = DEFAULT_SHORTCUT_COLUMNS,
-): string {
-  const widest = rows.reduce((n, r) => Math.max(n, r.shortcuts.length), 0);
-  const columns = Math.max(minColumns, widest);
-  const header = shortcutHeader(columns);
+export function shortcutExport(rows: readonly ShortcutExportRow[]): string {
+  const header = shortcutWorksheetHeader();
+  const body: string[][] = [];
 
-  const body = rows.map((r) =>
-    pad([r.processUniqueId, r.processName, r.currentGroup, ...r.shortcuts], header.length),
-  );
+  for (const row of rows) {
+    const current = row.shortcuts.map((s) => s.display).join(SHORTCUT_LIST_JOIN);
+    if (row.shortcuts.length === 0) {
+      body.push([row.processUniqueId, row.processName, row.currentGroup, '', '', '']);
+      continue;
+    }
+    for (const shortcut of row.shortcuts) {
+      body.push([
+        row.processUniqueId,
+        row.processName,
+        row.currentGroup,
+        current,
+        shortcut.uniqueId,
+        'Add',
+      ]);
+    }
+  }
 
   return toCsv([header, ...body]);
 }

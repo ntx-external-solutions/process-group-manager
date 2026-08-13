@@ -9,21 +9,39 @@ const PROCESS_LIST_HEADER =
   'Minimode Issued Date,Minimode Issued By,Group Path,Short Cut,Source Group,' +
   'Source Group Path,Process Unique Id';
 
-test('a file with Shortcut columns is the upload format', () => {
+test('a file pairing process ids with group ids is the upload format', () => {
   assert.equal(
-    classifyCsv('Process Unique Id,Process Name,Current Group,Shortcut 1\nx,y,z,w').kind,
+    classifyCsv('Process Unique Id,Process Name,Group Unique Id,Action\nw,x,y,z').kind,
     'shortcut-file',
   );
+});
+
+test('the shorter header spellings are recognised too', () => {
+  assert.equal(classifyCsv('Process ID,Group ID\nx,y').kind, 'shortcut-file');
 });
 
 test("Process Manager's export is recognised as a seed, not an upload", () => {
   assert.equal(classifyCsv(`${PROCESS_LIST_HEADER}\n`).kind, 'process-list');
 });
 
-test('that export with Shortcut columns added is an upload again', () => {
+test('that export with a Group Unique Id column added is an upload', () => {
   // The workflow in PLAN.md §4.5 ends with exactly this file, so it must not be
   // turned away as "already an export".
-  assert.equal(classifyCsv(`${PROCESS_LIST_HEADER},Shortcut 1,Shortcut 2\n`).kind, 'shortcut-file');
+  assert.equal(
+    classifyCsv(`${PROCESS_LIST_HEADER},Group Unique Id,Action\n`).kind,
+    'shortcut-file',
+  );
+});
+
+test('the retired wide format is named, so the error can explain the change', () => {
+  assert.equal(
+    classifyCsv('Process Unique Id,Process Name,Shortcut 1\nx,y,z').kind,
+    'legacy-shortcut-file',
+  );
+  assert.equal(
+    classifyCsv(`${PROCESS_LIST_HEADER},Shortcut 1,Shortcut 2\n`).kind,
+    'legacy-shortcut-file',
+  );
 });
 
 test('a single-column file is the group file', () => {

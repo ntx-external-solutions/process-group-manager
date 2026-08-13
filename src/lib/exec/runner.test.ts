@@ -331,12 +331,13 @@ test('a create left in doubt is never repeated, and says how to fix it by hand',
 // --------------------------------------------------------- shortcut plan
 
 function group(uniqueId: string, id: number, display: string): ResolvedGroup {
-  return { uniqueId, id, plannedSeq: null, name: display.split(' | ').pop() as string, display };
+  return { uniqueId, id, name: display.split(' | ').pop() as string, display };
 }
 
 function change(over: Partial<ShortcutChange> = {}): ShortcutChange {
   return {
     line: 2,
+    lines: [2],
     processUniqueId: PROCESS,
     processName: 'PQL via BDR',
     version: '2.3',
@@ -344,12 +345,21 @@ function change(over: Partial<ShortcutChange> = {}): ShortcutChange {
     desired: [group('g-legal', 501, 'Legal | Compliance')],
     currentShortcuts: [],
     writePath: { kind: 'publish-direct' },
+    fromPublished: true,
     ...over,
   };
 }
 
 function shortcutPlan(over: Partial<ShortcutPlan> = {}): ShortcutPlan {
-  return { updates: [], clears: [], unchanged: [], blocked: [], warnings: [], ...over };
+  return {
+    updates: [],
+    clears: [],
+    unchanged: [],
+    blocked: [],
+    warnings: [],
+    published: 'republish',
+    ...over,
+  };
 }
 
 function summaryFor(over: Partial<ProcessSummary> = {}): ProcessSummary {
@@ -455,22 +465,18 @@ test('a clear sends an empty shortcut list', async () => {
   assert.equal(summary.outcomes[0]?.action, 'shortcuts.clear');
 });
 
-test('a shortcut pointing at a group this run creates is refused, not guessed at', async () => {
-  // CreateGroup returns no numeric id, and the write payload needs one.
+test('a save on a published process says the live version was left alone', async () => {
+  // "Saved as a draft" alone would read as done, and the shortcut is not live yet.
   const h = harness();
   const summary = await runPlan(h.gateway, journal(), {
     shortcutPlan: shortcutPlan({
-      updates: [
-        change({
-          desired: [{ uniqueId: null, id: null, plannedSeq: 0, name: 'New', display: 'Brand | New' }],
-        }),
-      ],
+      updates: [change({ writePath: { kind: 'save-only' }, fromPublished: true })],
     }),
   });
 
-  assert.deepEqual(h.writes(), []);
-  assert.equal(summary.outcomes[0]?.result, 'skipped');
-  assert.match(summary.outcomes[0]?.detail as string, /Apply the group file first/);
+  assert.equal(h.calls.filter((c) => c.op === 'publish').length, 0);
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+  assert.match(summary.outcomes[0]?.detail as string, /published version still has its old shortcuts/);
 });
 
 // -------------------------------------------------- interrupted writes

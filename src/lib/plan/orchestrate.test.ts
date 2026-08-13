@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 
 import { parseGroupCsv } from '../csv/groups.ts';
 import { parseShortcutCsv } from '../csv/shortcuts.ts';
-import { pathKey } from '../csv/path.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
 import type { ChildTreeItemsResponse, TreeItem, TreeItemType } from '../pm/types.ts';
-import { buildGroupPlan, buildShortcutPlan, resolveShortcutTargets, type PlanGateway } from './orchestrate.ts';
+import {
+  buildGroupPlan,
+  buildShortcutPlan,
+  indexGroupsById,
+  loadWholeTree,
+  type PlanGateway,
+} from './orchestrate.ts';
 
 const PROCESS = '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c';
 
@@ -15,7 +20,9 @@ function item(title: string, itemType: TreeItemType = 'group'): TreeItem {
   nextId += 1;
   return {
     id: nextId,
-    uniqueId: `uid-${nextId}`,
+    // UUID-shaped, because the shortcut file will only accept a well-formed id and a
+    // fixture that cannot be written into one would test the wrong thing.
+    uniqueId: `00000000-0000-0000-0000-${String(nextId).padStart(12, '0')}`,
     title,
     itemType,
     itemOrder: 0,
@@ -122,9 +129,9 @@ test('a fully existing structure plans no creates', async () => {
   assert.deepEqual(plan.creates, []);
 });
 
-// ------------------------------------------------------- shortcut targets
+// -------------------------------------------------------- group id index
 
-test('resolves existing shortcut targets to their group ids', async () => {
+test('indexes every group by id, with its full path to read back', async () => {
   const legal = item('Legal');
   const compliance = item('Compliance');
   const g = gateway({
@@ -133,57 +140,62 @@ test('resolves existing shortcut targets to their group ids', async () => {
     [compliance.uniqueId]: [],
   });
 
-  const { tree } = await buildGroupPlan(g.impl, parseGroupCsv('Legal').rows);
-  const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},Legal | Compliance`).rows;
-  const resolved = await resolveShortcutTargets(g.impl, rows, tree, []);
+  const index = indexGroupsById(await loadWholeTree(g.impl));
 
-  assert.equal(resolved.get(pathKey(['Legal', 'Compliance']))?.uniqueId, compliance.uniqueId);
+  assert.equal(index.get(compliance.uniqueId)?.id, compliance.id);
+  assert.equal(index.get(compliance.uniqueId)?.display, 'Legal | Compliance');
+  assert.equal(index.get(legal.uniqueId)?.display, 'Legal');
 });
 
-test('a shortcut can target a group the same run will create', async () => {
-  // The upload creates "Brand | New" and points a shortcut at it in one go.
-  const g = gateway({ __root__: [] });
-  const groupRows = parseGroupCsv('Brand | New').rows;
-  const { plan, tree } = await buildGroupPlan(g.impl, groupRows);
+test('two groups sharing a name stay distinguishable', async () => {
+  // The whole reason ids replaced paths: this tenant shape used to be unaddressable.
+  const first = item('Finance');
+  const second = item('Finance');
+  const g = gateway({
+    __root__: [first, second],
+    [first.uniqueId]: [],
+    [second.uniqueId]: [],
+  });
 
-  const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},Brand | New`).rows;
-  const resolved = await resolveShortcutTargets(g.impl, rows, tree, plan.creates);
+  const index = indexGroupsById(await loadWholeTree(g.impl));
 
-  const target = resolved.get(pathKey(['Brand', 'New']));
-  assert.equal(target?.uniqueId, null);
-  assert.equal(target?.plannedSeq, plan.creates[1]?.seq);
+  assert.equal(index.size, 2);
+  assert.notEqual(index.get(first.uniqueId)?.id, index.get(second.uniqueId)?.id);
 });
 
-test('an unknown shortcut target stays unresolved for the planner to report', async () => {
+test('an id the tenant does not have is simply absent', async () => {
   const g = gateway({ __root__: [] });
-  const { tree } = await buildGroupPlan(g.impl, parseGroupCsv('Anything').rows);
-  const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},Nowhere | Missing`).rows;
-  const resolved = await resolveShortcutTargets(g.impl, rows, tree, []);
-  assert.equal(resolved.has(pathKey(['Nowhere', 'Missing'])), false);
+  const index = indexGroupsById(await loadWholeTree(g.impl));
+  assert.equal(index.has('uid-nowhere'), false);
 });
 
 // -------------------------------------------------------- shortcut plan
 
+/** The group lookup the planner takes, built by hand for a fixed tree. */
+function groupIndex(node: TreeItem, display = node.title) {
+  return new Map([
+    [node.uniqueId, { uniqueId: node.uniqueId, id: node.id, name: node.title, display }],
+  ]);
+}
+
 test('fetches process state and plans an update', async () => {
   const legal = item('Legal');
-  const g = gateway(
-    { __root__: [legal], [legal.uniqueId]: [] },
-    { [PROCESS]: summary() },
-  );
+  const g = gateway({ __root__: [legal], [legal.uniqueId]: [] }, { [PROCESS]: summary() });
 
-  const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},Legal`).rows;
-  const groups = new Map([
-    [pathKey(['Legal']), { uniqueId: legal.uniqueId, id: legal.id, plannedSeq: null, name: 'Legal', display: 'Legal' }],
-  ]);
+  const rows = parseShortcutCsv(
+    `Process Unique Id,Group Unique Id\n${PROCESS},${legal.uniqueId}`,
+  ).processes;
 
-  const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groups);
+  const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groupIndex(legal), {
+    published: 'republish',
+  });
   assert.deepEqual(unreadable, []);
   assert.equal(plan.updates.length, 1);
   assert.deepEqual(plan.updates[0]?.writePath, { kind: 'publish-direct' });
 });
 
-test('blank rows are never fetched', async () => {
-  // An exported file is mostly untouched rows; reading them all would be pure waste.
+test('re-planning applies a different publish choice without reading again', async () => {
+  const legal = item('Legal');
   let reads = 0;
   const impl: PlanGateway = {
     async groupsTree() {
@@ -198,7 +210,37 @@ test('blank rows are never fetched', async () => {
     },
   };
 
-  const rows = parseShortcutCsv(`Process ID,Shortcut 1\n${PROCESS},`).rows;
+  const rows = parseShortcutCsv(
+    `Process Unique Id,Group Unique Id\n${PROCESS},${legal.uniqueId}`,
+  ).processes;
+
+  const { plan, replan } = await buildShortcutPlan(impl, rows, groupIndex(legal), {
+    published: 'save',
+  });
+  assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' });
+
+  const republished = replan({ published: 'republish' });
+  assert.deepEqual(republished.updates[0]?.writePath, { kind: 'publish-direct' });
+  assert.equal(reads, 1, 'the tenant is read once, whatever the operator picks');
+});
+
+test('rows naming no group are never fetched', async () => {
+  // A generated worksheet is mostly untouched rows; reading them all would be waste.
+  let reads = 0;
+  const impl: PlanGateway = {
+    async groupsTree() {
+      return { treeItems: [], parentUniqueId: null };
+    },
+    async processSummary() {
+      reads += 1;
+      return summary();
+    },
+    async groupViewers() {
+      return [];
+    },
+  };
+
+  const rows = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${PROCESS},`).processes;
   const { plan } = await buildShortcutPlan(impl, rows, new Map());
 
   assert.equal(reads, 0);
@@ -214,13 +256,10 @@ test('one unreadable process does not abandon the rest of the plan', async () =>
   );
 
   const rows = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${PROCESS},Legal\n${other},Legal`,
-  ).rows;
-  const groups = new Map([
-    [pathKey(['Legal']), { uniqueId: legal.uniqueId, id: legal.id, plannedSeq: null, name: 'Legal', display: 'Legal' }],
-  ]);
+    `Process Unique Id,Group Unique Id\n${PROCESS},${legal.uniqueId}\n${other},${legal.uniqueId}`,
+  ).processes;
 
-  const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groups);
+  const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groupIndex(legal));
 
   assert.equal(unreadable.length, 1);
   assert.equal(unreadable[0]?.processUniqueId, PROCESS);
@@ -241,8 +280,8 @@ test('progress is reported while fetching processes', async () => {
 
   const seen: number[] = [];
   const rows = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${PROCESS},Legal\n${other},Legal`,
-  ).rows;
+    `Process Unique Id,Group Unique Id\n${PROCESS},${legal.uniqueId}\n${other},${legal.uniqueId}`,
+  ).processes;
 
   await buildShortcutPlan(g.impl, rows, new Map(), {
     concurrency: 1,

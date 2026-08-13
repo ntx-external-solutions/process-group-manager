@@ -5,174 +5,230 @@ import { parseShortcutCsv } from './shortcuts.ts';
 
 const UUID = '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c';
 const UUID2 = 'b842a208-adbe-4c84-b6b8-7a23694da1ac';
+const LEGAL = '3f240d01-1c4a-4a3e-9d3a-2b0f5a6c8d90';
+const FINANCE = '3c42fbb0-7e21-4a55-9a1f-6b7c8d9e0f11';
 
 test('parses the documented shape', () => {
   const r = parseShortcutCsv(
     [
-      'Process ID,Process Name,Current Group,Shortcut 1,Shortcut 2,Shortcut 3',
-      `${UUID},(draft) PQL via BDR,Partner Manager Day to Day,Legal | Compliance,Finance & IT | Finance,`,
+      'Process Unique Id,Process Name,Group Unique Id,Action',
+      `${UUID},(draft) PQL via BDR,${LEGAL},Add`,
+      `${UUID},(draft) PQL via BDR,${FINANCE},Add`,
     ].join('\n'),
   );
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows.length, 1);
+  assert.equal(r.processes.length, 1);
 
-  const row = r.rows[0]!;
+  const row = r.processes[0]!;
   assert.equal(row.processId, UUID);
   assert.equal(row.processName, '(draft) PQL via BDR');
-  assert.ok(row.intent.kind === 'set');
-  assert.deepEqual(row.intent.targets.map((t) => t.display), [
-    'Legal | Compliance',
-    'Finance & IT | Finance',
-  ]);
+  assert.deepEqual(row.add, [LEGAL, FINANCE]);
+  assert.deepEqual(row.remove, []);
+  assert.deepEqual(row.lines, [2, 3]);
+  assert.equal(row.line, 2);
 });
 
-test('reads as many Shortcut columns as the file provides', () => {
-  // No fixed cap: eight columns must work exactly like three.
-  const headers = ['Process ID', ...Array.from({ length: 8 }, (_, i) => `Shortcut ${i + 1}`)];
-  const values = [UUID, ...Array.from({ length: 8 }, (_, i) => `Group ${i + 1}`)];
-  const r = parseShortcutCsv(`${headers.join(',')}\n${values.join(',')}`);
+test('a process gains as many shortcuts as it has rows', () => {
+  // No fixed cap. Eight rows must work exactly like two.
+  const rows = Array.from(
+    { length: 8 },
+    (_, i) => `${UUID},x,${LEGAL.slice(0, -1)}${i},Add`,
+  );
+  const r = parseShortcutCsv(`Process Unique Id,Process Name,Group Unique Id,Action\n${rows.join('\n')}`);
   assert.deepEqual(r.errors, []);
-  assert.ok(r.rows[0]!.intent.kind === 'set');
-  assert.equal(r.rows[0]!.intent.targets.length, 8);
+  assert.equal(r.processes.length, 1);
+  assert.equal(r.processes[0]!.add.length, 8);
 });
 
-test('header spacing variants are accepted', () => {
-  const r = parseShortcutCsv(`Process ID,shortcut1,SHORTCUT  2\n${UUID},A,B`);
+test('a blank Action means Add', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id,Action\n${UUID},${LEGAL},`);
   assert.deepEqual(r.errors, []);
-  assert.ok(r.rows[0]!.intent.kind === 'set');
-  assert.equal(r.rows[0]!.intent.targets.length, 2);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
 });
 
-test('a misspelled shortcut column is an error, not a silent drop', () => {
-  // "Shortcuts 1" would otherwise be ignored and a whole column of intent lost.
-  const r = parseShortcutCsv(`Process ID,Shortcuts 1\n${UUID},Legal`);
-  assert.ok(r.errors.some((e) => /not named correctly/.test(e.message)));
-});
-
-test('blank shortcut cells mean no change, not clear', () => {
-  const r = parseShortcutCsv(`Process ID,Shortcut 1,Shortcut 2\n${UUID},,`);
+test('the Action column is optional entirely', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${UUID},${LEGAL}`);
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows[0]!.intent.kind, 'none');
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
+});
+
+test('Remove is read as a removal, whatever its case', () => {
+  const r = parseShortcutCsv(
+    `Process Unique Id,Group Unique Id,Action\n${UUID},${LEGAL},remove\n${UUID},${FINANCE},Add`,
+  );
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.processes[0]!.remove, [LEGAL]);
+  assert.deepEqual(r.processes[0]!.add, [FINANCE]);
+});
+
+test('an unrecognised Action is rejected rather than treated as Add', () => {
+  // Silently adding on "Delet" would do the opposite of what the row asks for.
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id,Action\n${UUID},${LEGAL},Delet`);
+  assert.match(r.errors[0]!.message, /not a valid Action/);
+});
+
+test('header spelling variants are accepted', () => {
+  const r = parseShortcutCsv(`Process ID,Group ID,Action\n${UUID},${LEGAL},Add`);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
+});
+
+test('group ids are matched case-insensitively', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${UUID.toUpperCase()},${LEGAL.toUpperCase()}`);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.processes[0]!.processId, UUID);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
+});
+
+test('a row naming no group is a no-op, not an error', () => {
+  // The generated worksheet has one of these per process the operator has not touched.
+  const r = parseShortcutCsv(`Process Unique Id,Process Name,Group Unique Id,Action\n${UUID},x,,`);
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.processes.length, 1);
+  assert.deepEqual(r.processes[0]!.add, []);
+  assert.equal(r.processes[0]!.clear, false);
+});
+
+test('an Action with no group is an error, because it asks for something impossible', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id,Action\n${UUID},,Remove`);
+  assert.match(r.errors[0]!.message, /names no group/);
 });
 
 test('CLEAR removes every shortcut', () => {
-  const r = parseShortcutCsv(`Process ID,Shortcut 1,Shortcut 2\n${UUID},CLEAR,`);
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${UUID},CLEAR`);
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows[0]!.intent.kind, 'clear');
+  assert.equal(r.processes[0]!.clear, true);
 });
 
 test('CLEAR is case-insensitive', () => {
-  const r = parseShortcutCsv(`Process ID,Shortcut 1\n${UUID},clear`);
-  assert.equal(r.rows[0]!.intent.kind, 'clear');
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${UUID},clear`);
+  assert.equal(r.processes[0]!.clear, true);
 });
 
-test('CLEAR mixed with real paths is contradictory and rejected', () => {
-  const r = parseShortcutCsv(`Process ID,Shortcut 1,Shortcut 2\n${UUID},CLEAR,Legal | Compliance`);
-  assert.equal(r.rows.length, 0);
-  assert.match(r.errors[0]!.message, /both CLEAR and shortcut paths/);
-});
-
-test('a malformed Process ID is rejected', () => {
-  const r = parseShortcutCsv('Process ID,Shortcut 1\nnot-a-uuid,Legal');
-  assert.equal(r.rows.length, 0);
-  assert.match(r.errors[0]!.message, /not a valid Process ID/);
-});
-
-test('rows may be identified by name when no ID column exists', () => {
+test('CLEAR combined with an Add is a replace, not a contradiction', () => {
+  // Clear the lot, then add these: the only way to express "exactly these shortcuts".
   const r = parseShortcutCsv(
-    'Process Name,Current Group,Shortcut 1\nPQL via BDR,Partner Manager Day to Day,Legal',
+    `Process Unique Id,Group Unique Id,Action\n${UUID},CLEAR,\n${UUID},${LEGAL},Add`,
   );
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows[0]!.processId, null);
-  assert.equal(r.rows[0]!.processName, 'PQL via BDR');
+  assert.equal(r.processes[0]!.clear, true);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
 });
 
-test('a file with no way to identify processes is rejected', () => {
-  const r = parseShortcutCsv('Shortcut 1\nLegal');
+test('a malformed Process Unique Id is rejected', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\nnot-a-uuid,${LEGAL}`);
+  assert.equal(r.processes.length, 0);
+  assert.match(r.errors[0]!.message, /not a valid Process Unique Id/);
+});
+
+test('a malformed Group Unique Id is rejected', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Group Unique Id\n${UUID},Legal | Compliance`);
+  assert.match(r.errors[0]!.message, /not a valid Group Unique Id/);
+});
+
+test('a file with no process id column is rejected', () => {
+  const r = parseShortcutCsv('Process Name,Group Unique Id\nPQL via BDR,x');
   assert.match(r.errors[0]!.message, /"Process Unique Id" column/);
 });
 
-test('accepts Process Manager\'s own Process List export, with Shortcut columns added', () => {
-  // Header lifted verbatim from a real export. The operator downloads that report,
-  // adds Shortcut columns in Excel, and uploads it — no intermediate step.
-  const header =
-    'Group Name,Process Name,Status,Process Owner,Process Expert,Star Rating,' +
-    'Simplicity,Effectiveness,Created Date,Modified Date,Modified By,Version,' +
-    'Minimode Url,Minimode Issued Date,Minimode Issued By,Group Path,Short Cut,' +
-    'Source Group,Source Group Path,Process Unique Id,Shortcut 1,Shortcut 2';
-  const row =
-    'Example Processes,NPS Capture,Suggested,,,Not applicable,Not applicable,' +
-    'Not applicable,11 Feb 2026,10 Aug 2026,Jonathan Butler,,,,,' +
-    '"Promapp Demo Ltd. > Testing Experience > Example Processes > NPS Capture",' +
-    `No,,,${UUID},Legal | Compliance,`;
+test('a file with no group id column is rejected', () => {
+  const r = parseShortcutCsv(`Process Unique Id,Process Name\n${UUID},x`);
+  assert.match(r.errors[0]!.message, /"Group Unique Id" column/);
+});
 
-  const r = parseShortcutCsv(`${header}\n${row}`);
+test('the retired wide format is named rather than called unrecognisable', () => {
+  // Files built to it are out there. "Your columns match nothing" is a poor answer.
+  const r = parseShortcutCsv(`Process Unique Id,Shortcut 1,Shortcut 2\n${UUID},Legal,Finance`);
+  assert.match(r.errors[0]!.message, /old "Shortcut 1" columns/);
+  assert.match(r.errors[0]!.message, /Group Unique Id/);
+});
+
+test('columns the file carries for the operator are ignored', () => {
+  // The generated worksheet has these, and Process Manager's export has more of them.
+  const r = parseShortcutCsv(
+    'Process Unique Id,Process Name,Current Group,Current Shortcuts,Status,Group Unique Id,Action\n' +
+      `${UUID},NPS Capture,Example Processes,Legal | Compliance,Suggested,${FINANCE},Add`,
+  );
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows[0]?.processId, UUID);
-  assert.equal(r.rows[0]?.processName, 'NPS Capture');
-
-  const intent = r.rows[0]!.intent;
-  assert.ok(intent.kind === 'set');
-  assert.deepEqual(intent.targets.map((t) => t.display), ['Legal | Compliance']);
+  assert.equal(r.processes[0]!.processName, 'NPS Capture');
+  assert.deepEqual(r.processes[0]!.add, [FINANCE]);
 });
 
 test('the report\'s "Short Cut" column is not mistaken for a shortcut column', () => {
   // "Short Cut" (with a space) is a status flag in the report, not data we apply.
-  // Treating it as a malformed "Shortcut N" would reject every exported file.
   const r = parseShortcutCsv(
-    `Process Unique Id,Short Cut,Source Group,Shortcut 1\n${UUID},No,,Legal`,
+    `Process Unique Id,Short Cut,Source Group,Group Unique Id\n${UUID},No,,${LEGAL}`,
   );
   assert.deepEqual(r.errors, []);
-  const intent = r.rows[0]!.intent;
-  assert.ok(intent.kind === 'set');
-  assert.deepEqual(intent.targets.map((t) => t.display), ['Legal']);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
 });
 
-test('a file with no shortcut columns is rejected', () => {
-  const r = parseShortcutCsv(`Process ID,Process Name\n${UUID},x`);
-  assert.match(r.errors[0]!.message, /nothing to apply/);
-});
-
-test('the same process listed twice is rejected', () => {
+test('rows for one process are folded together, in file order', () => {
   const r = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${UUID},Legal\n${UUID},Finance`,
-  );
-  assert.equal(r.rows.length, 1);
-  assert.match(r.errors[0]!.message, /same process as row 2/);
-});
-
-test('different processes are not confused with each other', () => {
-  const r = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${UUID},Legal\n${UUID2},Finance`,
+    [
+      'Process Unique Id,Group Unique Id,Action',
+      `${UUID},${LEGAL},Add`,
+      `${UUID2},${LEGAL},Add`,
+      `${UUID},${FINANCE},Add`,
+    ].join('\n'),
   );
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows.length, 2);
+  assert.equal(r.processes.length, 2);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL, FINANCE]);
+  assert.deepEqual(r.processes[0]!.lines, [2, 4]);
+  assert.deepEqual(r.processes[1]!.add, [LEGAL]);
 });
 
-test('a repeated shortcut within one row is de-duplicated with a warning', () => {
+test('adding and removing the same shortcut is contradictory and rejected', () => {
   const r = parseShortcutCsv(
-    `Process ID,Shortcut 1,Shortcut 2\n${UUID},Legal | Compliance,legal | compliance`,
+    `Process Unique Id,Group Unique Id,Action\n${UUID},${LEGAL},Add\n${UUID},${LEGAL},Remove`,
+  );
+  assert.match(r.errors[0]!.message, /row 2 asks to add/i);
+  // The contradictory row is dropped; the first still stands.
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
+});
+
+test('an exact duplicate row is de-duplicated with a warning', () => {
+  const r = parseShortcutCsv(
+    `Process Unique Id,Group Unique Id,Action\n${UUID},${LEGAL},Add\n${UUID},${LEGAL},Add`,
   );
   assert.deepEqual(r.errors, []);
-  assert.ok(r.rows[0]!.intent.kind === 'set');
-  assert.equal(r.rows[0]!.intent.targets.length, 1);
+  assert.deepEqual(r.processes[0]!.add, [LEGAL]);
   assert.equal(r.warnings.length, 1);
 });
 
-test('a malformed shortcut path fails its row without killing the file', () => {
+test('the same group on two different processes is not a duplicate', () => {
   const r = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${UUID},Legal || Broken\n${UUID2},Finance`,
+    `Process Unique Id,Group Unique Id\n${UUID},${LEGAL}\n${UUID2},${LEGAL}`,
   );
-  assert.equal(r.rows.length, 1);
-  assert.equal(r.rows[0]!.processId, UUID2);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.warnings, []);
+  assert.equal(r.processes.length, 2);
+});
+
+test('a bad row fails on its own without killing the file', () => {
+  const r = parseShortcutCsv(
+    `Process Unique Id,Group Unique Id\n${UUID},nonsense\n${UUID2},${FINANCE}`,
+  );
   assert.equal(r.errors.length, 1);
   assert.equal(r.errors[0]!.line, 2);
+  assert.equal(r.processes.length, 2);
+  assert.deepEqual(r.processes[1]!.add, [FINANCE]);
 });
 
 test('blank rows between records are ignored', () => {
   const r = parseShortcutCsv(
-    `Process ID,Shortcut 1\n${UUID},Legal\n\n\n${UUID2},Finance\n`,
+    `Process Unique Id,Group Unique Id\n${UUID},${LEGAL}\n\n\n${UUID2},${FINANCE}\n`,
   );
   assert.deepEqual(r.errors, []);
-  assert.equal(r.rows.length, 2);
+  assert.equal(r.processes.length, 2);
+});
+
+test('an empty file is reported as empty', () => {
+  assert.match(parseShortcutCsv('').errors[0]!.message, /empty/);
+});
+
+test('a header with no rows under it is reported', () => {
+  const r = parseShortcutCsv('Process Unique Id,Group Unique Id\n');
+  assert.match(r.errors[0]!.message, /no process rows/);
 });

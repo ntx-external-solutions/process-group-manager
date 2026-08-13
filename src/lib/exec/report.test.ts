@@ -43,8 +43,9 @@ test('rows blocked before the run are counted, not quietly dropped', () => {
       clears: [],
       unchanged: [],
       warnings: [],
+      published: 'save',
       blocked: [
-        { line: 4, processUniqueId: 'x', processName: 'Awaiting', reason: 'Awaiting approval — not modified.' },
+        { line: 4, processUniqueId: 'x', processName: 'Awaiting', reason: 'Awaiting approval, so it was not modified.' },
       ],
     },
   });
@@ -108,12 +109,13 @@ test('a row blocked before the run still needs attention', () => {
       clears: [],
       unchanged: [],
       warnings: [],
+      published: 'save',
       blocked: [
         {
           line: 5,
           processUniqueId: 'x',
           processName: 'Awaiting approval',
-          reason: 'Awaiting approval — not modified.',
+          reason: 'Awaiting approval, so it was not modified.',
         },
       ],
     },

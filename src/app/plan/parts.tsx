@@ -13,6 +13,7 @@ import type { CsvIssue } from '@/lib/csv/groups.ts';
 import type { ReportSummary } from '@/lib/exec/report.ts';
 import { ACTION_RECOVERED, type Outcome, type RunSummary } from '@/lib/exec/runner.ts';
 import type { OrphanGroup } from '@/lib/plan/orphans.ts';
+import type { PublishedBehaviour } from '@/lib/plan/shortcutPlan.ts';
 import { audienceChanges, type VisibilityReport } from '@/lib/plan/visibility.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
@@ -107,11 +108,12 @@ export function StructureView({ preview }: { preview: StructurePreview }) {
   return (
     <div className="panel">
       <h2>Structure afterwards</h2>
-      <p>
-        Your file&rsquo;s branches, with everything already in place around them. New and
-        moved groups are added at the end of their level — this run never reorders
-        anything. A moved group is drawn only at its destination; its subgroups go with it.
-      </p>
+      <p>Your file&rsquo;s branches, with everything already in place around them.</p>
+      <ul className="checklist">
+        <li>New and moved groups are added at the end of their level.</li>
+        <li>This run never reorders anything.</li>
+        <li>A moved group is drawn only at its destination. Its subgroups go with it.</li>
+      </ul>
       <StructureBranch nodes={preview.roots} />
     </div>
   );
@@ -139,8 +141,8 @@ function VisibilityView({ report }: { report: VisibilityReport }) {
       {report.unavailable !== null ? (
         <p>
           The viewer counts could not be read ({report.unavailable}), so the effect of
-          these moves on visibility is not shown. The plan itself is unaffected — but
-          permissions are inherited down the tree, so check the destinations yourself
+          these moves on visibility is not shown. The plan itself is unaffected.
+          Permissions are inherited down the tree, so check the destinations yourself
           before applying.
         </p>
       ) : changed.length === 0 ? (
@@ -154,8 +156,8 @@ function VisibilityView({ report }: { report: VisibilityReport }) {
         <>
           <p>
             {plural(changed.length, 'group')} land somewhere with a different audience.
-            Everything inside them — subgroups and processes alike — follows the
-            destination&rsquo;s permissions, not the ones it has today.
+            Everything inside them, subgroups and processes alike, follows the
+            destination&rsquo;s permissions rather than the ones it has today.
           </p>
           <table>
             <thead>
@@ -215,17 +217,20 @@ export function GroupPreviewView({
       {orphans.length > 0 && (
         <div className="panel warning">
           <h2>{plural(orphans.length, 'unnamed group')} already in your tenant</h2>
-          <p>
-            Creating a group happens in two steps, and Process Manager is known to drop
-            the second one when many groups are made at once — leaving a group called
-            &ldquo;New Group&rdquo;. This tool matches groups by name, so it cannot see
-            these, and any file naming the same group will create a fresh one beside the
-            half-made one.
-          </p>
-          <p>
-            Rename or delete these in Process Manager first, unless you are happy for the
-            groups below to be created alongside them.
-          </p>
+          <ul className="checklist">
+            <li>
+              Creating a group takes two steps. Process Manager drops the second one when
+              many groups are made at once, leaving a group called &ldquo;New Group&rdquo;.
+            </li>
+            <li>
+              This tool matches groups by name, so it cannot see these. A file naming the
+              same group will create a fresh one beside the half-made one.
+            </li>
+            <li>
+              Rename or delete these in Process Manager first, unless you want the groups
+              below created alongside them.
+            </li>
+          </ul>
           <ul className="issues">
             {orphans.slice(0, MAX_ROWS).map((orphan) => (
               <li key={orphan.uniqueId}>{orphan.display}</li>
@@ -241,8 +246,8 @@ export function GroupPreviewView({
           <h2>Nothing to do</h2>
           <p>
             Every group in the file already exists, with the name and in the place the
-            file puts it. Applying this would change nothing — which is what you want to
-            see when re-running a file you have already applied.
+            file puts it. Applying this would change nothing, which is what re-running a
+            file you have already applied should look like.
           </p>
         </div>
       )}
@@ -250,12 +255,14 @@ export function GroupPreviewView({
       {preview.moves.length > 0 && (
         <div className="panel warning">
           <h2>Groups to move ({preview.moves.length})</h2>
-          <p>
-            Each group keeps its id, so its processes, shortcuts, and stakeholders travel
-            with it — nothing is copied and nothing is republished. Its subgroups move
-            too. Because permissions are inherited down the tree, moving a group can
-            change who can see everything inside it.
-          </p>
+          <ul className="checklist">
+            <li>Each group keeps its id, so its processes, shortcuts, and stakeholders go with it.</li>
+            <li>Its subgroups move too. Nothing is copied and nothing is republished.</li>
+            <li>
+              Permissions are inherited down the tree, so a move can change who can see
+              everything inside the group.
+            </li>
+          </ul>
           <table>
             <thead>
               <tr>
@@ -289,8 +296,8 @@ export function GroupPreviewView({
         <div className="panel">
           <h2>Groups to rename ({preview.renames.length})</h2>
           <p>
-            The group itself is untouched — only its name changes. Anyone who has
-            bookmarked it by name, or written it into a document, will see the new one.
+            The group itself is untouched. Only its name changes. Anyone who bookmarked it
+            by name, or wrote it into a document, will see the new one.
           </p>
           <table>
             <thead>
@@ -363,10 +370,9 @@ export function GroupPreviewView({
 function Diff({ row }: { row: ShortcutPreviewRow }) {
   return (
     <div className="diff">
-      {row.diff.added.map((add) => (
-        <div key={`+${add.display}`} className="added">
-          + {add.display}
-          {add.isNewGroup && <span className="tag">new group</span>}
+      {row.diff.added.map((display) => (
+        <div key={`+${display}`} className="added">
+          + {display}
         </div>
       ))}
       {row.diff.removed.map((name) => (
@@ -393,7 +399,7 @@ function ChangeTable({ rows }: { rows: readonly ShortcutPreviewRow[] }) {
             <th>Process</th>
             <th>Change</th>
             <th>Version</th>
-            <th>Row</th>
+            <th>Rows</th>
           </tr>
         </thead>
         <tbody>
@@ -415,7 +421,7 @@ function ChangeTable({ rows }: { rows: readonly ShortcutPreviewRow[] }) {
                   </>
                 )}
               </td>
-              <td className="muted">{row.line}</td>
+              <td className="muted">{row.lines.join(', ')}</td>
             </tr>
           ))}
         </tbody>
@@ -425,13 +431,91 @@ function ChangeTable({ rows }: { rows: readonly ShortcutPreviewRow[] }) {
   );
 }
 
+/**
+ * The publish question, asked once for the run.
+ *
+ * It is asked here rather than answered for them because both answers have a cost and
+ * neither is obviously right: republishing burns a major version on every process, and
+ * saving leaves the change invisible to readers until someone publishes. Only the person
+ * doing it knows which they want.
+ *
+ * Changing the answer re-plans, so the counts above and below this panel always describe
+ * the option that is currently selected.
+ */
+export function PublishChoiceView({
+  preview,
+  value,
+  onChange,
+  disabled,
+}: {
+  preview: ShortcutPreview;
+  value: PublishedBehaviour;
+  onChange: (next: PublishedBehaviour) => void;
+  disabled: boolean;
+}) {
+  const affected = preview.counts.publishes + preview.counts.draftsOnPublished;
+
+  return (
+    <div className="panel">
+      <h2>Published processes</h2>
+      {affected === 0 ? (
+        <p>
+          No process in this file is published, so this choice changes nothing. Drafts and
+          in-progress processes are always saved, never published.
+        </p>
+      ) : (
+        <p>
+          {plural(affected, 'process')} in this file{' '}
+          {affected === 1 ? 'is' : 'are'} published today. Choose what happens to{' '}
+          {affected === 1 ? 'it' : 'them'}. Drafts (0.x) and in-progress versions (x.y) are
+          always saved, never published.
+        </p>
+      )}
+      <div className="choices">
+        <label className="checkbox">
+          <input
+            type="radio"
+            name="published"
+            checked={value === 'save'}
+            onChange={() => onChange('save')}
+            disabled={disabled}
+          />
+          <span>
+            <strong>Save without publishing</strong>
+            <span className="detail">
+              The shortcut is saved as a new draft. Readers keep seeing the published
+              version, with its current shortcuts, until someone publishes.
+            </span>
+          </span>
+        </label>
+        <label className="checkbox">
+          <input
+            type="radio"
+            name="published"
+            checked={value === 'republish'}
+            onChange={() => onChange('republish')}
+            disabled={disabled}
+          />
+          <span>
+            <strong>Republish</strong>
+            <span className="detail">
+              Each published process gets a new major version, live immediately. Change
+              notifications are suppressed, so nobody is emailed.
+            </span>
+          </span>
+        </label>
+      </div>
+    </div>
+  );
+}
+
 export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
   return (
     <>
       <Counts
         items={[
           { label: 'processes to update', value: preview.counts.updates, loud: true },
-          { label: 'to clear', value: preview.counts.clears, loud: preview.counts.clears > 0 },
+          { label: 'left with none', value: preview.counts.clears, loud: preview.counts.clears > 0 },
           { label: 'republished', value: preview.counts.publishes, loud: true },
           { label: 'saved as drafts', value: preview.counts.drafts },
           { label: 'unchanged', value: preview.counts.unchanged },
@@ -443,7 +527,7 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
         <div className="panel">
           <h2>Nothing to do</h2>
           <p>
-            Every process already has exactly the shortcuts in your file. Nothing would be
+            Every process already has the shortcuts your file asks for. Nothing would be
             written, and no version would change.
           </p>
         </div>
@@ -452,11 +536,26 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
       {preview.counts.publishes > 0 && (
         <div className="panel warning">
           <h2>{plural(preview.counts.publishes, 'process')} will be republished</h2>
-          <p>
-            Each gets a new published major version, visible to everyone who reads it.
-            Change notifications are suppressed, so stakeholders will not be emailed.
-            About {preview.writes.toLocaleString()} requests to Process Manager in total.
-          </p>
+          <ul className="checklist">
+            <li>Each gets a new published major version, visible to every reader.</li>
+            <li>Change notifications are suppressed, so stakeholders are not emailed.</li>
+            <li>
+              About {preview.writes.toLocaleString()} requests to Process Manager in total.
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {preview.counts.draftsOnPublished > 0 && (
+        <div className="panel warning">
+          <h2>
+            {plural(preview.counts.draftsOnPublished, 'published process')} will get a draft
+          </h2>
+          <ul className="checklist">
+            <li>The shortcut is saved but not published.</li>
+            <li>Readers keep seeing the current published version until someone publishes.</li>
+            <li>Pick Republish above if you want the change live now.</li>
+          </ul>
         </div>
       )}
 
@@ -469,11 +568,11 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
 
       {preview.clears.length > 0 && (
         <div className="panel warning">
-          <h2>Removing all shortcuts ({preview.clears.length.toLocaleString()})</h2>
-          <p>
-            These rows said CLEAR. Every shortcut is removed; the process stays in its own
-            group. This tool cannot put them back.
-          </p>
+          <h2>Left with no shortcuts ({preview.clears.length.toLocaleString()})</h2>
+          <ul className="checklist">
+            <li>Every shortcut is removed. The process stays in its own group.</li>
+            <li>This tool cannot put them back.</li>
+          </ul>
           <ChangeTable rows={preview.clears} />
         </div>
       )}
@@ -555,7 +654,7 @@ export function RunResultView({
         <h2>Keep the report</h2>
         <p>
           Every row this file touched, including the ones that were skipped and why. It is
-          generated here in your browser and never sent anywhere.
+          generated in your browser and never sent anywhere.
         </p>
         <div className="row">
           <button type="button" onClick={onDownload}>
@@ -570,16 +669,21 @@ export function RunResultView({
       {recoveries.length > 0 && (
         <div className="panel warning">
           <h2>{plural(recoveries.length, 'group')} needed repairing</h2>
-          <p>
-            Process Manager reported these as failed, or reported them renamed when they
-            were not. They were repaired rather than created twice, so your tree is
-            correct — but this is the behaviour that leaves &ldquo;New Group&rdquo;
-            entries behind, so it is worth knowing it happened here.
-          </p>
+          <ul className="checklist">
+            <li>
+              Process Manager reported these as failed, or reported them renamed when they
+              were not.
+            </li>
+            <li>They were repaired rather than created twice, so your tree is correct.</li>
+            <li>
+              This is the behaviour that leaves &ldquo;New Group&rdquo; entries behind, so
+              it is worth knowing it happened here.
+            </li>
+          </ul>
           <ul className="issues">
             {recoveries.slice(0, MAX_ROWS).map((row, i) => (
               <li key={`${row.targetId ?? row.target}-${i}`}>
-                <strong>{row.target}</strong> — {row.detail}
+                <strong>{row.target}</strong>: {row.detail}
               </li>
             ))}
           </ul>

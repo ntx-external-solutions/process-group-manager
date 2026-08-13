@@ -987,14 +987,13 @@ function outcomeFor(change: ShortcutChange, result: OutcomeResult, detail: strin
   };
 }
 
-/** Group references for the write payload, or null when one cannot be built. */
-function toGroupRefs(change: ShortcutChange): ProcessGroupRef[] | null {
-  const refs: ProcessGroupRef[] = [];
-  for (const group of change.desired) {
-    if (group.uniqueId === null || group.id === null) return null;
-    refs.push({ Id: group.id, UniqueId: group.uniqueId, Name: group.name });
-  }
-  return refs;
+/** Group references for the write payload. */
+function toGroupRefs(change: ShortcutChange): ProcessGroupRef[] {
+  return change.desired.map((group) => ({
+    Id: group.id,
+    UniqueId: group.uniqueId,
+    Name: group.name,
+  }));
 }
 
 async function applyShortcuts(
@@ -1008,13 +1007,6 @@ async function applyShortcuts(
   const needsPublish = change.writePath.kind !== 'save-only';
 
   const shortcuts = toGroupRefs(change);
-  if (shortcuts === null) {
-    return outcomeFor(
-      change,
-      'skipped',
-      'Points at a group this run is creating. Apply the group file first, then this one.',
-    );
-  }
 
   let revisionEditId: number | null = null;
   /** Whether this run sent anything, as opposed to inheriting an earlier one's work. */
@@ -1087,7 +1079,13 @@ async function applyShortcuts(
 
   if (!needsPublish) {
     return wroteHere
-      ? outcomeFor(change, 'ok', 'Saved as a draft. Not published.')
+      ? outcomeFor(
+          change,
+          'ok',
+          change.fromPublished
+            ? 'Saved as a draft. The published version still has its old shortcuts.'
+            : 'Saved as a draft. Not published.',
+        )
       : outcomeFor(change, 'skipped', CARRIED_OVER);
   }
 

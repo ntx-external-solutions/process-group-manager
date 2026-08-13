@@ -8,20 +8,23 @@
  * Everything here reads. Nothing in this file writes to Process Manager.
  */
 
-import { pathKey } from '../csv/path.ts';
+import { displayPath } from '../csv/path.ts';
 import type { GroupCsvRow } from '../csv/groups.ts';
-import type { ShortcutCsvRow } from '../csv/shortcuts.ts';
+import { isNoInstruction, type ShortcutCsvProcess } from '../csv/shortcuts.ts';
 import type { GroupViewerCount } from '../pm/groups.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
 import type { ChildTreeItemsResponse } from '../pm/types.ts';
 import { describeVisibility, viewerLookupIds, type VisibilityReport } from './visibility.ts';
-import { addLevel, emptyTree, resolvePath, type GroupTree } from './tree.ts';
-import { planGroups, type CreateAction, type GroupPlan } from './groupPlan.ts';
+import { addLevel, allGroups, emptyTree, type GroupTree } from './tree.ts';
+import { planGroups, type GroupPlan } from './groupPlan.ts';
 import {
   planShortcuts,
   type ProcessResolution,
+  type PublishedBehaviour,
   type ResolvedGroup,
   type ShortcutPlan,
+  type ShortcutPlanDeps,
+  type ShortcutPlanOptions,
 } from './shortcutPlan.ts';
 
 /** The reads this module needs. Implemented over the proxy in the browser. */
@@ -160,7 +163,7 @@ export async function buildGroupPlan(
     // recover from. Saying so beats looping until MAX_PASSES.
     throw new Error(
       'The whole group tree was loaded but planning still asked for more of it. ' +
-        'This is a bug — please report it.',
+        'This is a bug. Please report it.',
     );
   }
 
@@ -194,76 +197,25 @@ export async function buildGroupPlan(
 }
 
 /**
- * Resolve every shortcut target named in the CSV.
+ * Index every group in the tenant by its unique id.
  *
- * Targets may be groups that already exist, or groups this same run is about to
- * create — the latter resolve to a plan sequence rather than a uniqueId, which is
- * what lets a single upload create a group and point shortcuts at it.
+ * The shortcut file addresses groups by id, so there is no path to walk and no name to
+ * match: this is a straight lookup table, built once from a tree the caller has already
+ * loaded in full. Its display value is the group's full path, which is the only part
+ * of a group a person can actually read back.
  */
-export async function resolveShortcutTargets(
-  gateway: PlanGateway,
-  rows: readonly ShortcutCsvRow[],
-  tree: GroupTree,
-  creates: readonly CreateAction[],
-): Promise<Map<string, ResolvedGroup>> {
-  const wanted = new Map<string, string[]>();
-  for (const row of rows) {
-    if (row.intent.kind !== 'set') continue;
-    for (const target of row.intent.targets) {
-      wanted.set(target.key, target.segments);
-    }
-  }
-
-  const plannedByKey = new Map<string, CreateAction>();
-  for (const create of creates) plannedByKey.set(pathKey(create.path), create);
-
+export function indexGroupsById(tree: GroupTree): Map<string, ResolvedGroup> {
   const resolved = new Map<string, ResolvedGroup>();
 
-  for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const needed = new Set<string>();
-
-    for (const [key, segments] of wanted) {
-      if (resolved.has(key)) continue;
-
-      const planned = plannedByKey.get(key);
-      if (planned) {
-        resolved.set(key, {
-          uniqueId: null,
-          id: null,
-          plannedSeq: planned.seq,
-          name: planned.name,
-          display: planned.display,
-        });
-        continue;
-      }
-
-      const outcome = resolvePath(tree, segments);
-      if (outcome.kind === 'found') {
-        resolved.set(key, {
-          uniqueId: outcome.node.uniqueId,
-          id: outcome.node.id,
-          plannedSeq: null,
-          name: outcome.node.title,
-          display: segments.join(' | '),
-        });
-      } else if (outcome.kind === 'unloaded' && outcome.parent) {
-        needed.add(outcome.parent.uniqueId);
-      }
-      // 'missing', 'ambiguous' and 'documentGroup' stay unresolved; the shortcut
-      // planner reports them per row, where the CSV line number is known.
-    }
-
-    if (needed.size === 0) return resolved;
-
-    const levels = await Promise.all(
-      [...needed].map(async (uniqueId) => ({
-        uniqueId,
-        response: await gateway.groupsTree(uniqueId),
-      })),
-    );
-    for (const level of levels) {
-      addLevel(tree, level.uniqueId, level.response.treeItems ?? []);
-    }
+  for (const { uniqueId, path } of allGroups(tree)) {
+    const node = tree.byUniqueId.get(uniqueId);
+    if (!node) continue;
+    resolved.set(uniqueId.toLowerCase(), {
+      uniqueId: node.uniqueId,
+      id: node.id,
+      name: node.title,
+      display: displayPath(path),
+    });
   }
 
   return resolved;
@@ -273,40 +225,51 @@ export interface ShortcutPlanResult {
   plan: ShortcutPlan;
   /** Processes that could not be read at all, keyed by CSV line. */
   unreadable: Array<{ line: number; processUniqueId: string; message: string }>;
+  /**
+   * Re-plan against the same reads with a different publish choice.
+   *
+   * Changing that answer changes which processes are blocked as well as how they are
+   * written, so it cannot be applied to a finished plan — but nothing in planning does
+   * I/O, so re-running it costs nothing and needs no second pass over the tenant.
+   */
+  replan(options: ShortcutPlanOptions): ShortcutPlan;
 }
 
 /**
  * Fetch the current state of every process named in the CSV, then plan.
  *
- * Rows with no shortcut data are skipped before fetching — a blank row cannot change
- * anything, so reading the process would be wasted work on a file that is mostly
- * untouched exported rows.
+ * Processes whose rows name no group are skipped before fetching — they cannot change
+ * anything, so reading them would be wasted work on a file that is mostly untouched
+ * worksheet rows.
  */
 export async function buildShortcutPlan(
   gateway: PlanGateway,
-  rows: readonly ShortcutCsvRow[],
+  processes: readonly ShortcutCsvProcess[],
   groups: ReadonlyMap<string, ResolvedGroup>,
-  options: { concurrency?: number; onProgress?: Progress } = {},
+  options: {
+    concurrency?: number;
+    onProgress?: Progress;
+    published?: PublishedBehaviour | undefined;
+  } = {},
 ): Promise<ShortcutPlanResult> {
   const concurrency = Math.max(1, options.concurrency ?? 4);
   const unreadable: ShortcutPlanResult['unreadable'] = [];
   const summaries = new Map<string, ProcessSummary>();
 
-  const toFetch = rows.filter((row) => row.intent.kind !== 'none' && row.processId !== null);
+  const toFetch = processes.filter((row) => !isNoInstruction(row));
   let done = 0;
 
   for (let i = 0; i < toFetch.length; i += concurrency) {
     const batch = toFetch.slice(i, i + concurrency);
     await Promise.all(
       batch.map(async (row) => {
-        const id = row.processId as string;
         try {
-          summaries.set(id, await gateway.processSummary(id));
+          summaries.set(row.processId, await gateway.processSummary(row.processId));
         } catch (error) {
           // One unreadable process must not abandon the plan for the other 1,517.
           unreadable.push({
             line: row.line,
-            processUniqueId: id,
+            processUniqueId: row.processId,
             message: (error as Error).message,
           });
         }
@@ -316,15 +279,10 @@ export async function buildShortcutPlan(
     options.onProgress?.({ phase: 'processes', done, total: toFetch.length });
   }
 
-  const plan = planShortcuts(rows, {
-    resolveGroup: (key) => groups.get(key) ?? null,
-    resolveProcess: (row): ProcessResolution => {
-      if (row.processId === null) {
-        // Name-based resolution needs a tenant-wide process index, which v1 does not
-        // build. The export always carries IDs, so this is the unusual path.
-        return { kind: 'missing' };
-      }
-      const summary = summaries.get(row.processId);
+  const deps: ShortcutPlanDeps = {
+    resolveGroup: (uniqueId) => groups.get(uniqueId.toLowerCase()) ?? null,
+    resolveProcess: (processId): ProcessResolution => {
+      const summary = summaries.get(processId);
       if (!summary) return { kind: 'missing' };
       return {
         kind: 'found',
@@ -349,7 +307,14 @@ export async function buildShortcutPlan(
         },
       };
     },
-  });
+  };
 
-  return { plan, unreadable };
+  const replan = (planOptions: ShortcutPlanOptions): ShortcutPlan =>
+    planShortcuts(processes, deps, planOptions);
+
+  return {
+    plan: replan({ published: options.published ?? 'save' }),
+    unreadable,
+    replan,
+  };
 }

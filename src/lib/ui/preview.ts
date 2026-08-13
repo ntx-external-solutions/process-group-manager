@@ -159,8 +159,8 @@ export function groupPreviewToCsv(preview: GroupPreview): string {
 // ---------------------------------------------------------- shortcut plan
 
 export interface ShortcutDiff {
-  /** Shortcuts being added, by the path the operator wrote. */
-  added: Array<{ display: string; isNewGroup: boolean }>;
+  /** Shortcuts being added, by the full path of the group. */
+  added: string[];
   /**
    * Shortcuts being removed. Only the group's own name is available — Process Manager
    * reports a shortcut as an id and a leaf name, never a full path.
@@ -174,30 +174,37 @@ export function diffShortcuts(
   current: readonly ProcessGroupRef[],
   desired: readonly ResolvedGroup[],
 ): ShortcutDiff {
-  const currentIds = new Set(current.map((s) => s.UniqueId));
-  // A group that does not exist yet has no id, so it can never be "kept".
-  const desiredIds = new Set(desired.map((g) => g.uniqueId).filter((id): id is string => id !== null));
+  const currentIds = new Set(current.map((s) => s.UniqueId.toLowerCase()));
+  const desiredIds = new Set(desired.map((g) => g.uniqueId.toLowerCase()));
 
-  const added: ShortcutDiff['added'] = [];
+  const added: string[] = [];
   const kept: string[] = [];
 
   for (const group of desired) {
-    if (group.uniqueId !== null && currentIds.has(group.uniqueId)) {
-      kept.push(group.display);
-    } else {
-      added.push({ display: group.display, isNewGroup: group.uniqueId === null });
-    }
+    if (currentIds.has(group.uniqueId.toLowerCase())) kept.push(group.display);
+    else added.push(group.display);
   }
 
-  const removed = current.filter((s) => !desiredIds.has(s.UniqueId)).map((s) => s.Name);
+  const removed = current
+    .filter((s) => !desiredIds.has(s.UniqueId.toLowerCase()))
+    .map((s) => s.Name);
 
   return { added, removed, kept };
 }
 
-export function describeWritePath(writePath: WritePath): string {
+/**
+ * What a write does, in the operator's terms.
+ *
+ * A save on a published process is not the same event as a save on one already in
+ * progress, and calling both "saves a draft" would hide the part that surprises people:
+ * the live version keeps the shortcuts it has until somebody publishes.
+ */
+export function describeWritePath(writePath: WritePath, fromPublished = false): string {
   switch (writePath.kind) {
     case 'save-only':
-      return 'Saves a draft. Nothing is published.';
+      return fromPublished
+        ? 'Saves a draft. The published version keeps its current shortcuts.'
+        : 'Saves a draft. Nothing is published.';
     case 'publish-direct':
       return 'Publishes a new major version.';
     case 'submit-then-publish':
@@ -209,6 +216,8 @@ export { expectedVersion } from '../plan/version.ts';
 
 export interface ShortcutPreviewRow {
   line: number;
+  /** Every row of the file that fed this change, for the downloadable plan. */
+  lines: number[];
   processUniqueId: string;
   processName: string;
   version: string;
@@ -216,6 +225,8 @@ export interface ShortcutPreviewRow {
   diff: ShortcutDiff;
   effect: string;
   publishes: boolean;
+  /** Published today, so a save leaves the live version behind. */
+  fromPublished: boolean;
 }
 
 export interface ShortcutPreviewCounts {
@@ -227,6 +238,8 @@ export interface ShortcutPreviewCounts {
   publishes: number;
   /** Changes that only save a draft. */
   drafts: number;
+  /** Drafts that sit on top of a published version, which is the surprising case. */
+  draftsOnPublished: number;
 }
 
 export interface ShortcutPreview {
@@ -238,19 +251,23 @@ export interface ShortcutPreview {
   counts: ShortcutPreviewCounts;
   /** Total PM writes implied — publishes cost two or three requests, not one. */
   writes: number;
+  /** The publish choice this preview was built from. */
+  published: ShortcutPlan['published'];
   isNoOp: boolean;
 }
 
 function toRow(change: ShortcutChange): ShortcutPreviewRow {
   return {
     line: change.line,
+    lines: change.lines,
     processUniqueId: change.processUniqueId,
     processName: change.processName,
     version: change.version,
     expectedVersion: expectedVersionOf(change.version, change.writePath),
     diff: diffShortcuts(change.currentShortcuts, change.desired),
-    effect: describeWritePath(change.writePath),
+    effect: describeWritePath(change.writePath, change.fromPublished),
     publishes: change.writePath.kind !== 'save-only',
+    fromPublished: change.fromPublished,
   };
 }
 
@@ -275,8 +292,10 @@ export function buildShortcutPreview(plan: ShortcutPlan): ShortcutPreview {
       blocked: plan.blocked.length,
       publishes,
       drafts: all.length - publishes,
+      draftsOnPublished: all.filter((r) => !r.publishes && r.fromPublished).length,
     },
     writes: writeCount(plan),
+    published: plan.published,
     isNoOp: all.length === 0,
   };
 }
@@ -300,7 +319,7 @@ export function shortcutPreviewToCsv(preview: ShortcutPreview): string {
       'Removing',
       'Keeping',
       'Effect',
-      'CSV Row',
+      'CSV Rows',
     ],
   ];
 
@@ -311,11 +330,13 @@ export function shortcutPreviewToCsv(preview: ShortcutPreview): string {
       r.processName,
       r.version,
       r.expectedVersion ?? '',
-      r.diff.added.map((a) => (a.isNewGroup ? `${a.display} (new)` : a.display)).join(SHORTCUT_JOIN),
+      r.diff.added.join(SHORTCUT_JOIN),
       r.diff.removed.join(SHORTCUT_JOIN),
       r.diff.kept.join(SHORTCUT_JOIN),
       r.effect,
-      String(r.line),
+      // A process gathers its shortcuts from several rows, so citing one would send
+      // whoever checks the plan to an arbitrary line of the file.
+      r.lines.join(', '),
     ]);
   };
 

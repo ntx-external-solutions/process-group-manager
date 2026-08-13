@@ -22,7 +22,7 @@ import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/li
 import { runPlan, type Outcome, type RunProgress, type RunSummary } from '@/lib/exec/runner.ts';
 import type { GroupPlan } from '@/lib/plan/groupPlan.ts';
 import { findOrphanGroups, type OrphanGroup } from '@/lib/plan/orphans.ts';
-import type { ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
+import type { PublishedBehaviour, ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
 import { groupTemplate, groupExport, shortcutTemplate } from '@/lib/csv/template.ts';
@@ -31,9 +31,9 @@ import {
   buildGroupPlan,
   buildShortcutPlan,
   describeMoveVisibility,
-  loadRootTree,
+  indexGroupsById,
   loadWholeTree,
-  resolveShortcutTargets,
+  type ShortcutPlanResult,
 } from '@/lib/plan/orchestrate.ts';
 import type { VisibilityReport } from '@/lib/plan/visibility.ts';
 import { datedFilename, downloadCsv, downloadText } from '@/lib/ui/download.ts';
@@ -63,6 +63,7 @@ import {
   GroupPreviewView,
   IssueList,
   plural,
+  PublishChoiceView,
   RunResultView,
   ShortcutPreviewView,
 } from './parts.tsx';
@@ -91,6 +92,12 @@ export default function PlanPage() {
   const [structure, setStructure] = useState<StructurePreview | null>(null);
   const [shortcutPreview, setShortcutPreview] = useState<ShortcutPreview | null>(null);
   const [clearsAcknowledged, setClearsAcknowledged] = useState(false);
+
+  // What to do with processes that are published today. Re-planning is free once the
+  // reads are done, so the choice re-derives the plan rather than being handed to the
+  // runner: the operator approves the plan their answer produced, not another one.
+  const [published, setPublished] = useState<PublishedBehaviour>('save');
+  const replanRef = useRef<ShortcutPlanResult['replan'] | null>(null);
 
   // The previews are for reading; these are what actually gets executed. Keeping both
   // from the same planning pass is what guarantees the run matches what was approved.
@@ -150,6 +157,8 @@ export default function PlanPage() {
     setGroupPlan(null);
     setShortcutPlan(null);
     setClearsAcknowledged(false);
+    setPublished('save');
+    replanRef.current = null;
     setRunSummary(null);
     setProgress(null);
   }
@@ -162,7 +171,7 @@ export default function PlanPage() {
 
   function handleFailure(cause: unknown) {
     if (cause instanceof PmRequestError) {
-      setError([cause.message, cause.detail].filter(Boolean).join(' — '));
+      setError([cause.message, cause.detail].filter(Boolean).join(': '));
       // Only an actually-rejected session sends them back to sign in.
       if (cause.signedOut) setSession(null);
       return;
@@ -180,11 +189,14 @@ export default function PlanPage() {
         onProgress: (event) => setBusy(`Reading the group tree… ${event.done} groups`),
       });
       const groups = allGroups(tree);
-      downloadCsv(datedFilename('group-structure'), groupExport(groups));
+      downloadCsv(datedFilename('group-hierarchy'), groupExport(groups));
       setNote(
-        `Downloaded ${groups.length.toLocaleString()} existing groups, one level per ` +
-          `column. Leave the Group Unique Id column alone on rows you are keeping — ` +
-          `it is what ties a row to that exact group.`,
+        task === 'shortcuts'
+          ? `Downloaded ${groups.length.toLocaleString()} groups with their ids. Copy the ` +
+            `Group Unique Id of each group you want a shortcut in.`
+          : `Downloaded ${groups.length.toLocaleString()} groups, one level per column. ` +
+            `Keep the Group Unique Id on rows you are keeping. It ties a row to that ` +
+            `exact group.`,
       );
     } catch (cause) {
       handleFailure(cause);
@@ -210,10 +222,10 @@ export default function PlanPage() {
       const kind = classifyCsv(text).kind;
 
       if (task === 'groups') {
-        if (kind === 'shortcut-file' || kind === 'process-list') {
+        if (kind === 'shortcut-file' || kind === 'legacy-shortcut-file' || kind === 'process-list') {
           setError(
-            'That is a shortcuts file. Choose "Process shortcuts" above, or upload a ' +
-              'file with one group path per row.',
+            'That is a shortcuts file. Pick "Process shortcuts" above, or upload a file ' +
+              'with one group per row.',
           );
           return;
         }
@@ -223,20 +235,29 @@ export default function PlanPage() {
 
       if (kind === 'group-file') {
         setError(
-          'That is a group-structure file. Choose "Group structure" above, or upload a ' +
-            'file with Shortcut columns.',
+          'That is a group-structure file. Pick "Group structure" above, or upload a ' +
+            'file with a Group Unique Id column on every shortcut row.',
+        );
+        return;
+      }
+      if (kind === 'legacy-shortcut-file') {
+        setError(
+          'This file uses the old Shortcut 1, Shortcut 2 columns, which named groups by ' +
+            'path. Group names repeat, so paths pointed at the wrong group. Use one row ' +
+            'per shortcut with a Group Unique Id instead. The template below shows the ' +
+            'format, and the group hierarchy download has the ids.',
         );
         return;
       }
       if (kind === 'process-list') {
-        // They uploaded Process Manager's export. It cannot express intent — it has no
-        // Shortcut columns — so convert it into the file that can and hand it back.
+        // They uploaded Process Manager's export. It carries no group ids, so convert it
+        // into the worksheet that can hold them and hand it back.
         await convertProcessList(text);
         return;
       }
       if (kind === 'unknown') {
         setError(
-          'This file has no "Shortcut 1" column and is not a Process List export, so ' +
+          'This file has no Group Unique Id column and is not a Process List export, so ' +
             'there is nothing to apply. Download the template below to see the format.',
         );
         return;
@@ -283,26 +304,42 @@ export default function PlanPage() {
 
     const gateway = browserGateway();
 
-    setBusy('Finding the groups your file names…');
-    const tree = await loadRootTree(gateway);
-    // No group plan runs alongside this upload, so every shortcut target must already
-    // exist; the planner reports the ones that do not, per row.
-    const groups = await resolveShortcutTargets(gateway, parsed.rows, tree, []);
+    // The file names groups by id, so there is no path to walk and nothing to guess at.
+    // The whole tree is read once and turned into a lookup table, which also gives every
+    // group a full path to show in the preview.
+    setBusy('Reading the group tree…');
+    const tree = await loadWholeTree(gateway, {
+      onProgress: (event) => setBusy(`Reading the group tree… ${event.done} groups`),
+    });
+    const groups = indexGroupsById(tree);
 
     setBusy('Reading the processes…');
-    const { plan, unreadable: failures } = await buildShortcutPlan(gateway, parsed.rows, groups, {
+    const result = await buildShortcutPlan(gateway, parsed.processes, groups, {
+      published,
       onProgress: (event) =>
         setBusy(`Reading the processes… ${event.done} of ${event.total ?? '?'}`),
     });
 
     setUnreadable(
-      failures.map((f) => ({
+      result.unreadable.map((f) => ({
         line: f.line,
         message: `Could not read process ${f.processUniqueId}: ${f.message}`,
       })),
     );
+    replanRef.current = result.replan;
+    setShortcutPreview(buildShortcutPreview(result.plan));
+    setShortcutPlan(result.plan);
+  }
+
+  /** Answer the publish question, and re-derive the plan from the same reads. */
+  function choosePublished(next: PublishedBehaviour) {
+    setPublished(next);
+    const replan = replanRef.current;
+    if (!replan) return;
+    const plan = replan({ published: next });
     setShortcutPreview(buildShortcutPreview(plan));
     setShortcutPlan(plan);
+    setClearsAcknowledged(false);
   }
 
   async function convertProcessList(text: string) {
@@ -316,12 +353,11 @@ export default function PlanPage() {
     if (result.errors.length > 0) return;
 
     downloadCsv(datedFilename('process-shortcuts'), toShortcutCsv(result.processes));
-    const withShortcuts = result.processes.filter((p) => p.shortcutPaths.length > 0).length;
     setNote(
-      `That was Process Manager's Process List export, so we turned it into a file you ` +
-        `can edit: ${result.processes.length.toLocaleString()} processes, ` +
-        `${withShortcuts.toLocaleString()} of them with shortcuts already filled in. ` +
-        `Edit it in Excel and upload it here again.`,
+      `That was Process Manager's Process List export, so we turned it into a worksheet: ` +
+        `${result.processes.length.toLocaleString()} processes, one row each, with their ` +
+        `current shortcuts listed for reference. Fill in a Group Unique Id on each row ` +
+        `you want to change, add a row per extra shortcut, then upload it here.`,
     );
   }
 
@@ -418,18 +454,21 @@ export default function PlanPage() {
       </p>
       <h1>Plan a change</h1>
       <p className="lede">
-        Signed in as {session.username} — tenant <code>{session.tenant}</code>. Nothing is
+        Signed in as {session.username} on tenant <code>{session.tenant}</code>. Nothing is
         written until you press Apply.
       </p>
 
       {unfinished !== null && runSummary === null && (
         <div className="panel warning">
           <h2>A previous run in this tab did not finish</h2>
-          <p>
-            Upload the same file again and apply it — anything that already completed is
-            skipped rather than repeated. If you would rather start clean, discard it
-            first; steps that already ran will then be attempted a second time.
-          </p>
+          <ul className="checklist">
+            <li>Upload the same file again and apply it.</li>
+            <li>Anything that already completed is skipped, not repeated.</li>
+            <li>
+              Discard the run instead to start clean. Steps that already ran will then be
+              attempted a second time.
+            </li>
+          </ul>
           <div className="row">
             <button
               type="button"
@@ -471,23 +510,30 @@ export default function PlanPage() {
       {task === 'groups' && (
         <div className="panel">
           <h2>2. Start from a file</h2>
-          <p>
-            One group per row, one level per column — <code>Level 1</code>,{' '}
-            <code>Level 2</code>, and so on. Write the full path on every row rather than
-            leaving parent cells blank. A single <code>Group Path</code> column with levels
-            separated by <code>|</code> still works too.
-          </p>
-          <p>
-            Rows carry a <code>Group Unique Id</code>, which pins a row to that exact
-            group. Leave it filled in on rows you are keeping, and blank on rows you add.
-            On a row that has one, the name and level columns are the state you want:
-            change the last name to rename the group, move it to different columns to
-            reparent it. It keeps its id, so its processes and permissions go with it.
-          </p>
-          <p>
-            <strong>Nothing is ever deleted.</strong> A group missing from your file is
-            left exactly as it is — removing a row is not how you remove a group.
-          </p>
+          <p>One group per row, one level per column.</p>
+          <ul className="checklist">
+            <li>
+              Put the full path on every row, across <code>Level 1</code>,{' '}
+              <code>Level 2</code>, and so on. Do not leave parent cells blank.
+            </li>
+            <li>
+              A single <code>Group Path</code> column with levels separated by{' '}
+              <code>|</code> also works.
+            </li>
+            <li>
+              Keep the <code>Group Unique Id</code> on rows for groups that already exist.
+              Leave it blank on rows you are adding.
+            </li>
+            <li>
+              On a row with an id, the name and level columns are the state you want.
+              Change the last name to rename the group. Move it to different columns to
+              reparent it. It keeps its id, so its processes and permissions go with it.
+            </li>
+            <li>
+              Nothing is ever deleted. A group missing from your file is left alone.
+              Deleting a row does not delete a group.
+            </li>
+          </ul>
           <div className="row">
             <button
               type="button"
@@ -513,12 +559,41 @@ export default function PlanPage() {
         <div className="panel">
           <h2>2. Start from a file</h2>
           <p>
-            The best starting point is your own data. In Process Manager, export the
-            Process List report with shortcuts included, then upload it below — we will
-            turn it into an editable file with every process&rsquo;s current shortcuts
-            already filled in, so any row you do not touch changes nothing.
+            One row per shortcut. Groups are named by id, never by name, because group
+            names repeat and a name picks the wrong group.
           </p>
+          <ul className="checklist">
+            <li>
+              Download the group hierarchy. It lists every group with its{' '}
+              <code>Group Unique Id</code>.
+            </li>
+            <li>
+              Export the Process List report from Process Manager and upload it below. We
+              turn it into a worksheet with one row per process and its id filled in.
+            </li>
+            <li>
+              Paste the <code>Group Unique Id</code> of the group you want a shortcut in.
+              Add a row per extra shortcut: three shortcuts means three rows with the same{' '}
+              <code>Process Unique Id</code>. The process is still written once.
+            </li>
+            <li>
+              Leave <code>Action</code> blank or set it to <code>Add</code> to add a
+              shortcut. Set it to <code>Remove</code> to take one away.
+            </li>
+            <li>
+              Shortcuts you do not list are left alone. To strip a process back to none,
+              put <code>CLEAR</code> in <code>Group Unique Id</code>.
+            </li>
+          </ul>
           <div className="row">
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => void downloadCurrentStructure()}
+              disabled={working}
+            >
+              Download group hierarchy
+            </button>
             <button
               type="button"
               className="secondary"
@@ -536,7 +611,7 @@ export default function PlanPage() {
           <h2>3. Upload your file</h2>
           <p>
             {task === 'shortcuts'
-              ? 'Either your edited shortcuts file, or a Process List export to convert.'
+              ? 'Your shortcuts file, or a Process List export to convert.'
               : 'A CSV with one group per row.'}
           </p>
           <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={working} />
@@ -589,6 +664,12 @@ export default function PlanPage() {
       {shortcutPreview !== null && (
         <>
           <h2 className="section">What would happen</h2>
+          <PublishChoiceView
+            preview={shortcutPreview}
+            value={published}
+            onChange={choosePublished}
+            disabled={running || runSummary !== null}
+          />
           <ShortcutPreviewView preview={shortcutPreview} />
         </>
       )}
@@ -597,8 +678,8 @@ export default function PlanPage() {
         <div className="panel">
           <h2>4. Apply</h2>
           <p>
-            Download the plan first if you want it reviewed by someone else, or checked in
-            Excel — it lists every row, including the ones shown truncated above.
+            Download the plan first to review it in Excel or send it to someone else. It
+            lists every row, including any hidden by the row limit above.
           </p>
           <div className="row">
             <button
@@ -647,13 +728,13 @@ export default function PlanPage() {
 
           {preview.isNoOp ? (
             <p className="pending">
-              There is nothing to apply — this file matches what your tenant already has.
+              Nothing to apply. This file matches what your tenant already has.
             </p>
           ) : (
             <p className="pending">
-              This writes to <code>{session.tenant}</code>. Leave this tab open until it
-              finishes; if it is interrupted, come back and apply the same file again to
-              pick up where it stopped.
+              This writes to <code>{session.tenant}</code>. Leave the tab open until it
+              finishes. If it is interrupted, apply the same file again to pick up where it
+              stopped.
             </p>
           )}
 
@@ -677,7 +758,7 @@ export default function PlanPage() {
       {progress !== null && runSummary === null && (
         <div className="panel">
           <h2>
-            {progress.phase === 'groups' ? 'Creating groups' : 'Updating processes'} —{' '}
+            {progress.phase === 'groups' ? 'Creating groups' : 'Updating processes'}:{' '}
             {progress.done.toLocaleString()} of {progress.total.toLocaleString()}
           </h2>
           <progress value={progress.done} max={Math.max(progress.total, 1)} />

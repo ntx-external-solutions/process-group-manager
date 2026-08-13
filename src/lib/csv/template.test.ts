@@ -79,76 +79,82 @@ test('the template uses one column per level', () => {
   ]);
 });
 
-test('a shortcut export round-trips to the same intent', () => {
+const PROCESS = '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c';
+const LEGAL = '3f240d01-1c4a-4a3e-9d3a-2b0f5a6c8d90';
+const FINANCE = '3c42fbb0-7e21-4a55-9a1f-6b7c8d9e0f11';
+
+test('a shortcut export round-trips to the same group ids', () => {
   const csv = shortcutExport([
     {
-      processUniqueId: '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c',
+      processUniqueId: PROCESS,
       processName: '(draft) PQL via BDR',
       currentGroup: 'Partner Manager Day to Day',
-      shortcuts: ['Legal | Compliance', 'Finance & IT | Finance'],
+      shortcuts: [
+        { uniqueId: LEGAL, display: 'Legal | Compliance' },
+        { uniqueId: FINANCE, display: 'Finance & IT | Finance' },
+      ],
     },
   ]);
 
   const r = parseShortcutCsv(csv);
   assert.deepEqual(r.errors, []);
-  const intent = r.rows[0]!.intent;
-  assert.ok(intent.kind === 'set');
-  assert.deepEqual(intent.targets.map((t) => t.display), [
-    'Legal | Compliance',
-    'Finance & IT | Finance',
-  ]);
+  assert.equal(r.processes.length, 1, 'two shortcuts, two rows, one process');
+  assert.deepEqual(r.processes[0]!.add, [LEGAL, FINANCE]);
 });
 
-test('an untouched exported row is a no-op, not a clear', () => {
-  // This is what makes replace semantics safe: export, edit some rows, re-upload.
+test('an untouched exported row re-applies what is already there', () => {
+  // Export, edit some rows, re-upload: the rows nobody touched must plan to nothing.
   const csv = shortcutExport([
     {
-      processUniqueId: '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c',
+      processUniqueId: PROCESS,
       processName: 'Untouched',
       currentGroup: 'Home',
-      shortcuts: ['Legal | Compliance'],
+      shortcuts: [{ uniqueId: LEGAL, display: 'Legal | Compliance' }],
     },
   ]);
-  const intent = parseShortcutCsv(csv).rows[0]!.intent;
-  assert.equal(intent.kind, 'set');
-  assert.notEqual(intent.kind, 'clear');
+  const row = parseShortcutCsv(csv).processes[0]!;
+  assert.deepEqual(row.add, [LEGAL]);
+  assert.deepEqual(row.remove, []);
+  assert.equal(row.clear, false);
 });
 
-test('an export widens to fit the process with the most shortcuts', () => {
-  const many = Array.from({ length: 9 }, (_, i) => `Group ${i + 1}`);
+test('an export lists every shortcut, however many a process has', () => {
+  const many = Array.from({ length: 9 }, (_, i) => ({
+    uniqueId: `${String(i).repeat(8)}-1111-2222-3333-444444444444`,
+    display: `Group ${i + 1}`,
+  }));
   const csv = shortcutExport([
     {
-      processUniqueId: '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c',
+      processUniqueId: PROCESS,
       processName: 'Heavily cross-linked',
       currentGroup: 'Home',
       shortcuts: many,
     },
   ]);
 
-  const intent = parseShortcutCsv(csv).rows[0]!.intent;
-  assert.ok(intent.kind === 'set');
   // An export must never truncate the state it claims to describe.
-  assert.equal(intent.targets.length, 9);
+  assert.equal(parseShortcutCsv(csv).processes[0]!.add.length, 9);
 });
 
-test('a process with no shortcuts exports as blank cells, meaning no change', () => {
+test('a process with no shortcuts still gets a row, meaning no change', () => {
   const csv = shortcutExport([
     {
-      processUniqueId: '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c',
+      processUniqueId: PROCESS,
       processName: 'No shortcuts',
       currentGroup: 'Home',
       shortcuts: [],
     },
   ]);
-  assert.equal(parseShortcutCsv(csv).rows[0]!.intent.kind, 'none');
+  const r = parseShortcutCsv(csv);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.processes[0]!.add, []);
 });
 
-test('shortcutHeader numbers columns from one', () => {
-  assert.deepEqual(shortcutHeader(2), [
+test('shortcutHeader is the minimal upload shape', () => {
+  assert.deepEqual(shortcutHeader(), [
     'Process Unique Id',
     'Process Name',
-    'Current Group',
-    'Shortcut 1',
-    'Shortcut 2',
+    'Group Unique Id',
+    'Action',
   ]);
 });

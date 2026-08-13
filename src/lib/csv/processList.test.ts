@@ -237,15 +237,13 @@ test('the generated file parses back through the shortcut parser', () => {
 
   const parsed = parseShortcutCsv(generated);
   assert.deepEqual(parsed.errors, []);
-  assert.equal(parsed.rows[0]?.processId, FIRST_PROCESS);
-
-  const intent = parsed.rows[0]!.intent;
-  assert.ok(intent.kind === 'set', 'current shortcuts must be pre-filled');
-  assert.deepEqual(intent.targets.map((t) => t.display), ['My Group']);
+  assert.equal(parsed.processes[0]?.processId, FIRST_PROCESS);
+  assert.equal(parsed.processes[0]?.processName, 'First Process');
 });
 
-test('an untouched generated row is a no-op by construction', () => {
-  // The whole point of seeding from the report: round-tripping changes nothing.
+test('an untouched generated row changes nothing', () => {
+  // The worksheet carries no group ids, so a row nobody edits cannot ask for anything.
+  // Shortcuts are additive, so the ones it already has survive untouched.
   const csv = [
     HEADER,
     row({
@@ -259,29 +257,33 @@ test('an untouched generated row is a no-op by construction', () => {
 
   const { processes } = parseProcessListCsv(csv, { topLevelGroups: TOP_LEVEL });
   const parsed = parseShortcutCsv(toShortcutCsv(processes));
-  const intent = parsed.rows[0]!.intent;
 
-  assert.ok(intent.kind === 'set');
-  // Identical to what the tenant already has, so the planner will mark it unchanged.
-  assert.deepEqual(intent.targets.map((t) => t.display), ['My Group']);
+  assert.deepEqual(parsed.errors, []);
+  assert.deepEqual(parsed.processes[0]!.add, []);
+  assert.equal(parsed.processes[0]!.clear, false);
 });
 
-test('a process with no shortcuts generates blank cells, meaning no change', () => {
+test('the current shortcuts ride along for the operator to read', () => {
+  // The ids are unreadable, so without this there is nothing in the file to check a
+  // row against. The parser ignores the column.
   const csv = [
     HEADER,
     row({
-      name: 'Conduct Field Maintenance',
-      groupPath: 'Promapp Demo Ltd. > My Group > Automated Testing > Conduct Field Maintenance',
-      uid: '0f4a32f0-fea2-41e8-9f2e-c39787604d4d',
+      name: 'First Process',
+      groupPath: 'Promapp Demo Ltd. > My Group > First Process',
+      shortCut: 'Yes',
+      sourceGroupPath: 'Promapp Demo Ltd. > New Group > Example Group > First Process',
+      uid: FIRST_PROCESS,
     }),
   ].join('\n');
 
   const { processes } = parseProcessListCsv(csv, { topLevelGroups: TOP_LEVEL });
-  const parsed = parseShortcutCsv(toShortcutCsv(processes));
-  assert.equal(parsed.rows[0]!.intent.kind, 'none');
+  const generated = toShortcutCsv(processes);
+  assert.match(generated, /Current Shortcuts/);
+  assert.match(generated, /My Group/);
 });
 
-test('the generated file widens to fit the most-shortcut process', () => {
+test('a process appears once however many placements it has', () => {
   const many = Array.from({ length: 8 }, (_, i) =>
     row({
       name: 'Busy',
@@ -293,7 +295,5 @@ test('the generated file widens to fit the most-shortcut process', () => {
   );
   const { processes } = parseProcessListCsv([HEADER, ...many].join('\n'));
   const parsed = parseShortcutCsv(toShortcutCsv(processes));
-  const intent = parsed.rows[0]!.intent;
-  assert.ok(intent.kind === 'set');
-  assert.equal(intent.targets.length, 8);
+  assert.equal(parsed.processes.length, 1);
 });

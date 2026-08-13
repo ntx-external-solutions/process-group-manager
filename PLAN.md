@@ -249,62 +249,103 @@ Advisory: if the counts cannot be read, the plan is unaffected and the preview s
 
 ### 4.3 Shortcut CSV
 
+One row per **(process, group)** pair. Both ends are addressed by id.
+
 ```csv
-Process ID,Process Name,Current Group,Shortcut 1,Shortcut 2,Shortcut 3
-6a9779c8-…,(draft) PQL via BDR,Partner Manager Day to Day,Legal | Compliance,Finance & IT | Finance,
+Process Unique Id,Process Name,Group Unique Id,Action
+6a9779c8-…,(draft) PQL via BDR,3f240d01-…,Add
+6a9779c8-…,(draft) PQL via BDR,3c42fbb0-…,Add
+6a9779c8-…,(draft) PQL via BDR,7aa7f333-…,Remove
 ```
 
-- **`Process ID`** — the process UUID. Authoritative when present.
-- **`Process Name`**, **`Current Group`** — informational. Compared against reality;
-  a mismatch is a **warning**, not a failure, since names drift.
-- **`Shortcut N`** — every column whose header matches `/^Shortcut\s*\d+$/i` is read,
-  however many there are. **No fixed limit** (see DESIGN.md). Order is not significant.
+- **`Process Unique Id`** — the process UUID. Required. `Process ID` is accepted too.
+- **`Process Name`** — informational. Compared against reality; a mismatch is a
+  **warning**, not a failure, since names drift. It is never used to find a process.
+- **`Group Unique Id`** — the group UUID, from the hierarchy download. Required.
+  `Group ID` is accepted too. `CLEAR` in this column removes every shortcut.
+- **`Action`** — `Add` (or blank) or `Remove`. Anything else is a hard error rather
+  than a silent Add, which would do the opposite of what the row says.
+- Any other column is ignored, so the worksheet can carry `Current Group`,
+  `Current Shortcuts`, and whatever the operator pasted in beside them.
 
-**If `Process ID` is absent**, rows resolve by `Process Name` + `Current Group`. Any
-name resolving to zero or multiple processes is a hard error naming the candidates —
-with 1,518 processes, duplicate names are near-certain and guessing is unacceptable.
+**A process appearing several times is the expected shape**, not a contradiction. Every
+row for one process folds into one instruction, so it is read once, written once, and
+versioned once however many groups it gains.
 
-### 4.4 Blank vs. clear
+#### Why ids replaced paths
 
-Per "the CSV always wins **for any data in the CSV**":
+The original format was wide — `Shortcut 1`, `Shortcut 2`, … each holding a
+`Legal | Compliance` path. It does not survive contact with a real tenant: group names
+repeat across branches (DESIGN.md R7, and `Operations`, `Compliance`, `Sales Operations`
+all appear more than once in the production instance), so a path resolved to the wrong
+group, to two groups, or to none. Every one of those failures is silent enough to be
+noticed only after the shortcut lands somewhere nobody expected.
+
+Ids remove the guess entirely: there is no matching step, so there is nothing to get
+wrong. The cost is that the operator cannot type a group id from memory, which is what
+the hierarchy download exists to solve (§4.5). Uploading a file in the retired format is
+detected by its header and named as such, rather than failing deep in a parser.
+
+A second consequence: **a shortcut can no longer point at a group the same run is
+creating.** A group that does not exist has no id to write down. The group file is
+applied first, its hierarchy re-downloaded, and the new ids used from there.
+
+### 4.4 Add, remove, clear
+
+Shortcuts are **additive**. The file adds what it names and takes nothing away unless a
+row says so.
 
 | Row content | Meaning |
 |---|---|
-| One or more shortcut cells populated | **Replace** the process's shortcuts with exactly that set. |
-| All shortcut cells blank | **No data → no change.** The row is a no-op. |
-| `CLEAR` alone in `Shortcut 1` | **Remove all shortcuts.** Explicit data, so the CSV wins. |
-| Process absent from the CSV | Untouched. |
+| `Group Unique Id` + `Add` (or blank Action) | **Add** that shortcut. Everything else the process has is kept. |
+| `Group Unique Id` + `Remove` | **Remove** that one shortcut. The rest are kept. |
+| `CLEAR` in `Group Unique Id` | **Remove all shortcuts.** Combine with `Add` rows to express "exactly these". |
+| Blank `Group Unique Id` | **No data → no change.** The row is a no-op. |
+| Process absent from the file | Untouched. |
 
-Blank means "I didn't say", not "delete" — which is what makes a partially-filled
-spreadsheet safe. Removing shortcuts stays possible, but only by saying so. Any plan
-containing `CLEAR` rows lists them as their own category with its own confirmation.
+This is the reverse of the original decision (replace) and the reason is the row-per-pair
+shape: under replace, a hand-written file listing the two shortcuts someone wanted to add
+would silently strip every other shortcut those processes had. Additive means a partial
+file can only ever do what it says. Removing stays possible, but only by asking for it.
+
+Two safeguards survive from the replace design:
+
+- A change that ends with **no shortcuts at all** is its own preview category with its
+  own confirmation, whether it got there via `CLEAR` or via the last `Remove`.
+- A `Remove` naming a shortcut the process does not have is a **warning**, not a
+  failure. It is nearly always a file applied twice.
 
 ### 4.5 Where the input file comes from
 
-**Shortcuts — Process Manager's Process List export seeds the file; it is not the
-file.** Exported with shortcuts included, that report carries everything needed:
-`Process Unique Id`, and one row per *placement* so shortcuts are visible.
+**Shortcuts need two files: the group hierarchy for ids, and a process list for
+process ids.**
 
 ```
-Export Process List (with shortcuts)  →  upload  →  download clean wide-format file,
-current shortcuts pre-filled  →  edit in Excel  →  upload  →  preview  →  apply
+Download group hierarchy  ──────────────────┐   (group ids, with full paths)
+                                            ├─→  build the file in Excel  →  upload
+Export Process List  →  upload  →  worksheet ┘   →  preview  →  apply
 ```
 
-**Why transform rather than edit the report directly.** It is one row per placement,
-which makes it a poor upload format:
+The **group hierarchy download** is the same file the group task produces:
+`Group Unique Id` plus one column per level. It doubles as the lookup table for
+shortcuts, which is deliberate — one file, one meaning for the id column.
 
-- Adding a shortcut would mean duplicating a row and editing two path columns, rather
-  than filling one cell.
-- Repeated UUIDs are normal there, so accepting it would force us to drop the
-  duplicate-row check that catches contradictory instructions (§4.3).
-- Removing a shortcut would be expressed by *deleting a row* — indistinguishable from
-  someone pasting only part of the file.
-- Its paths are a different grammar: ` > ` separated, prefixed with the organisation
-  name, suffixed with the process name.
+The **Process List export** seeds the process side. Exported with shortcuts included, it
+carries `Process Unique Id` and one row per *placement*. Uploading it returns a
+worksheet: one row per process, carrying `Current Group` and `Current Shortcuts` for the
+operator to read, with `Group Unique Id` and `Action` left blank to fill in.
 
-The transform (`csv/processList.ts`) folds placements into one record per process and
-converts the paths. It is pure, costs no API calls, and is verified against a real
-export.
+**The transform does not resolve shortcut paths to ids.** It could — the report names
+each shortcut's group path — but resolving a path is exactly the step that picks the
+wrong group when names repeat, and doing it there would write a guessed id into the file
+with nothing to mark it as a guess. Existing shortcuts are listed as text instead, and
+left in place: shortcuts are additive, so a row that names no group changes nothing.
+
+**Why transform rather than edit the report directly.** It is one row per placement, and
+its paths are a different grammar: ` > ` separated, prefixed with the organisation name,
+suffixed with the process name. The transform (`csv/processList.ts`) folds placements
+into one record per process. It is pure, costs no API calls, and is verified against a
+real export.
 
 Two details that matter:
 
@@ -319,10 +360,8 @@ export filtered to a single top-level group, that first segment is a real group.
 transform therefore takes the tenant's actual top-level group names and only strips
 what is not one of them, falling back to a flagged assumption if they are unavailable.
 
-Because every generated row arrives carrying its current shortcuts, an untouched row
-is a no-op **by construction**. Blank still means *no change* rather than *clear*
-(§4.4) so that a hand-made file with sparse columns cannot wipe the tenant, but with a
-seeded file the distinction rarely arises.
+An untouched generated row is a no-op **by construction**: it names no group, so it can
+ask for nothing.
 
 **Groups** — still offered as a template (headers plus illustrative rows) and a
 current-state export of every existing path, since there is no equivalent report.
@@ -384,37 +423,60 @@ type GroupAction =
 
 Groups present in PM but absent from the CSV are listed under `untouched`.
 
-### 5.2 Shortcut plan (replace)
+### 5.2 Shortcut plan (additive)
 
-For each row: resolve the process, resolve every shortcut path to an existing group
-UUID (pre-existing, or scheduled for creation in the same run), then diff current
-against desired **as a set of group UUIDs**.
+For each process: resolve it, look every group id up in the tenant-wide index, compute
+the desired set, then diff it against the current one **as a set of group UUIDs**.
+
+```
+desired = (clear ? ∅ : current) + adds − removes
+```
+
+The starting point is what the process already has, which is what makes the file
+additive. A shortcut pointing at a group the *tree read could not see* is carried across
+untouched rather than dropped: permissions can hide a group, and rewriting the process
+without it would silently remove a shortcut nobody asked to remove.
 
 | Category | Condition | Treatment |
 |---|---|---|
-| `unchanged` | sets equal, or row is blank | Skipped — no write, no version bump. |
+| `unchanged` | desired equals current, or the rows name no group | Skipped. No write, no version bump. |
 | `update` | sets differ, desired non-empty | Normal path. |
-| `clear` | explicit `CLEAR`, current non-empty | Own category, own confirmation. |
-| `blocked` | see §5.3 | Never written; reported with a reason. |
+| `clear` | desired empty, current non-empty | Own category, own confirmation. |
+| `blocked` | unknown group id, or see §5.3 | Never written; reported with a reason. |
 
 `unchanged` matters more than it looks: it is what makes a re-run a no-op rather than
 1,518 pointless republishes.
 
+Group ids are resolved from a **whole-tree read** (~92 requests on the measured tenant),
+not the on-demand walk the group planner uses. There is no path to tell us which
+branches matter, and the read also supplies each group's full path, which is the only
+readable thing a preview can show for an id.
+
 ### 5.3 Write path by process state
 
-Branching on `ProcessRevisionStateId` and `processActions`:
+Branching on `ProcessRevisionStateId`, `processActions`, and the operator's answer to
+the publish question:
 
-| State | Path |
-|---|---|
-| **3 — published** | `PUT` (save, minor bump) → publish. If `CanPublishAfterEdit` → `POST …/Publish` directly. Else `PUT DoSubmitForApproval:true` → `POST …/Publish`. |
-| **1 — in progress** | Single `PUT`, `DoPublish:false`, no publish. Minor bump only, per the brief. |
-| **2 — awaiting approval** | **Blocked. Not touched.** Editing a process mid-approval would disturb someone else's review. |
+| State | `published: 'save'` | `published: 'republish'` |
+|---|---|---|
+| **3 — published** | Single `PUT`, no publish. Minor bump; the live version keeps its old shortcuts until someone publishes. | `PUT` (save, minor bump) → publish. If `CanPublishAfterEdit` → `POST …/Publish` directly. Else `PUT DoSubmitForApproval:true` → `POST …/Publish`. |
+| **1 — in progress** (0.x drafts and x.y) | Single `PUT`, `DoPublish:false`, no publish. Minor bump only, per the brief. | Same. The choice does not apply: there is no published version to disturb. |
+| **2 — awaiting approval** | **Blocked. Not touched.** Editing a process mid-approval would disturb someone else's review. | Same. |
 
 `SuppressChangeNotification: true` on **every** write.
 
+**The publish question is asked, not answered for them.** Both answers cost something —
+republishing burns a major version on every published process, and saving leaves the
+change invisible to readers — and only the operator knows which they want. It is one
+choice for the whole run, made on the preview screen, and it **re-plans**: the answer
+changes which processes are blocked as well as how they are written, so the plan they
+approve is the one their answer produced. Re-planning is free because planning does no
+I/O. The default is `save`, so nothing publishes without being asked for.
+
 A process is also `blocked` when `EditPermissions.CanEdit` is false, or when it is
-published and the user can neither publish after edit nor approve — the change would
-silently queue for approval rather than land.
+published, the operator chose to republish, and they can neither publish after edit nor
+approve — the change would silently queue for approval rather than land. That last case
+disappears under `save`, which asks for none of those rights.
 
 **Every blocked process is surfaced twice**: as a highlighted count on the preview
 *before* the run, and as an explicit row in the report CSV *after* it — with the
@@ -540,6 +602,11 @@ Two decisions that only became obvious once the screens existed:
   arriving with one is the expected case, not a mistake. Uploading a group file into
   the shortcuts task, or vice versa, is named as such instead of failing deep in a
   parser. See `lib/csv/detect.ts`.
+- **The publish question is asked on the preview, and re-plans.** Whether published
+  processes are republished or left as drafts is the one decision this tool cannot make
+  for the operator, so it is a required-looking choice sitting above the counts, with
+  both consequences spelled out. Changing it re-derives the plan (§5.3), so the numbers
+  under it always describe the option that is selected.
 - **The preview is downloadable.** At tenant scale a plan runs to thousands of rows,
   and a page that renders them all is not reviewable. On-screen rows are capped; the
   CSV is the review surface, and the thing you send to whoever has to approve it.
@@ -567,12 +634,12 @@ src/
   lib/csv/
     path.ts          parse + normalise group paths
     groups.ts        group CSV parse/validate
-    shortcuts.ts     shortcut CSV parse/validate (dynamic Shortcut N columns)
+    shortcuts.ts     shortcut CSV parse/validate (one row per process/group pair)
     template.ts      template + current-state CSV generation
   lib/plan/
     tree.ts          existing-tree model
     groupPlan.ts     create / rename / move planner
-    shortcutPlan.ts  replace planner + write-path selection
+    shortcutPlan.ts  additive planner + write-path selection
   lib/exec/
     journal.ts       append-only log, replay
     runner.ts        concurrency, retry, resume
@@ -589,7 +656,7 @@ in a route handler, and in the browser.
 
 - **Unit** — path normalisation against the real dirty names (`"Partner Facing "`,
   duplicate `Operations` siblings); CSV parsing including BOM, CRLF, quoted commas,
-  ragged `Shortcut N` columns; both planners against fixture trees.
+  and rows for one process spread across the file; both planners against fixture trees.
 - **Contract** — request/response fixtures lifted verbatim from the three HARs. In
   particular: the double-serialised `ProcessJson` wrapper, the string-typed
   `ProcessRevisionEditId` on `/Publish`, and the `groupUniqueId`-keyed response from
@@ -626,10 +693,10 @@ Two things the executor decided that this plan had left open:
   either way, but the report is an audit of *this* run, and a row that says "applied"
   when nothing was sent is worse than no report at all.
 
-Shortcuts pointing at a group the same run is creating are refused rather than
-resolved: `CreateGroup` returns a uniqueId but no numeric id, and the write payload
-needs both. Apply the group file first, then the shortcut file — which is what the UI
-asks for anyway, since the two tasks are separate uploads.
+A shortcut cannot point at a group the same run is creating, because a group that does
+not exist yet has no id to write in the file. Apply the group file, download the
+hierarchy again, then build the shortcut file from the new ids. The two tasks were
+already separate uploads, so this costs a download rather than a step.
 
 Milestone 3 is worth reaching fastest — a trustworthy read-only diff against real data
 is what tells us the CSV grammar and matching rules survive contact with names like
@@ -644,9 +711,9 @@ Stated because they are inferences, not confirmations:
 1. **`CanPublishAfterEdit: true` permits `POST …/Publish` without the intermediate
    submit-for-approval `PUT`.** Only submit-then-publish was observed. Spike 0 settles
    it; if false, published processes cost three writes each.
-2. **Blank shortcut cells mean "no change", not "clear"** (§4.4), on the reading that
-   the CSV wins *for the data it contains*. Clearing requires the explicit `CLEAR`
-   keyword.
+2. **A shortcut row with no group means "no change", not "clear"** (§4.4). Shortcuts
+   are additive, so removing one requires `Remove`, and removing all of them requires
+   the explicit `CLEAR` keyword.
 3. **Group paths match case-insensitively.** PM's own sibling-uniqueness rules are
    unverified; if it permits siblings differing only by case, we report the ambiguity
    rather than pick one.

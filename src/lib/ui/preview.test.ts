@@ -9,6 +9,7 @@ import {
   buildGroupPreview,
   buildShortcutPreview,
   describeCreateParent,
+  describeWritePath,
   diffShortcuts,
   expectedVersion,
   groupPreviewToCsv,
@@ -20,16 +21,13 @@ const LEGAL: ProcessGroupRef = { Id: 1, UniqueId: 'grp-legal', Name: 'Compliance
 const FINANCE: ProcessGroupRef = { Id: 2, UniqueId: 'grp-finance', Name: 'Finance' };
 
 function existing(uniqueId: string, display: string): ResolvedGroup {
-  return { uniqueId, id: 900, plannedSeq: null, name: display.split(' | ').pop() as string, display };
-}
-
-function planned(seq: number, display: string): ResolvedGroup {
-  return { uniqueId: null, id: null, plannedSeq: seq, name: display.split(' | ').pop() as string, display };
+  return { uniqueId, id: 900, name: display.split(' | ').pop() as string, display };
 }
 
 function change(over: Partial<ShortcutChange> = {}): ShortcutChange {
   return {
     line: 2,
+    lines: [2],
     processUniqueId: '6a9779c8-70b8-45d8-bb36-9de47b9fbf7c',
     processName: 'PQL via BDR',
     version: '2.0',
@@ -37,19 +35,30 @@ function change(over: Partial<ShortcutChange> = {}): ShortcutChange {
     desired: [],
     currentShortcuts: [],
     writePath: { kind: 'publish-direct' },
+    fromPublished: true,
     ...over,
   };
 }
 
 function shortcutPlan(over: Partial<ShortcutPlan> = {}): ShortcutPlan {
-  return { updates: [], clears: [], unchanged: [], blocked: [], warnings: [], ...over };
+  return {
+    updates: [],
+    clears: [],
+    unchanged: [],
+    blocked: [],
+    warnings: [],
+    published: 'republish',
+    ...over,
+  };
 }
 
 // ----------------------------------------------------------------- diff
 
-test('an added shortcut is named by the path the operator wrote', () => {
+test('an added shortcut is named by its full path, not its id', () => {
+  // The id is what the file carries and what nobody can read. The preview has to say
+  // which group it landed on, or there is nothing to check.
   const diff = diffShortcuts([], [existing('grp-legal', 'Legal | Compliance')]);
-  assert.deepEqual(diff.added, [{ display: 'Legal | Compliance', isNewGroup: false }]);
+  assert.deepEqual(diff.added, ['Legal | Compliance']);
   assert.deepEqual(diff.removed, []);
 });
 
@@ -65,15 +74,15 @@ test('a shortcut present before and after is kept, not re-added', () => {
     [existing('grp-legal', 'Legal | Compliance'), existing('grp-new', 'New | Place')],
   );
   assert.deepEqual(diff.kept, ['Legal | Compliance']);
-  assert.deepEqual(diff.added, [{ display: 'New | Place', isNewGroup: false }]);
+  assert.deepEqual(diff.added, ['New | Place']);
   assert.deepEqual(diff.removed, ['Finance']);
 });
 
-test('a group this run will create is flagged as new', () => {
-  // Otherwise the preview claims a group exists that does not, and the operator has
-  // no way to spot a typo that silently becomes a brand new group.
-  const diff = diffShortcuts([], [planned(0, 'Brand | New')]);
-  assert.deepEqual(diff.added, [{ display: 'Brand | New', isNewGroup: true }]);
+test('ids compare case-insensitively, so nothing is re-added to itself', () => {
+  const diff = diffShortcuts([LEGAL], [existing(LEGAL.UniqueId.toUpperCase(), 'Legal | Compliance')]);
+  assert.deepEqual(diff.kept, ['Legal | Compliance']);
+  assert.deepEqual(diff.added, []);
+  assert.deepEqual(diff.removed, []);
 });
 
 // -------------------------------------------------------------- versions
@@ -133,6 +142,34 @@ test('the publish count is separated from the draft count', () => {
   assert.equal(preview.writes, 6);
 });
 
+test('a draft left on a published process is counted on its own', () => {
+  // "Saved as a draft" hides the surprise: the live version still has the old
+  // shortcuts. That case needs its own number, not a share of the draft count.
+  const preview = buildShortcutPreview(
+    shortcutPlan({
+      published: 'save',
+      updates: [
+        change({ line: 2, writePath: { kind: 'save-only' }, fromPublished: true }),
+        change({ line: 3, writePath: { kind: 'save-only' }, fromPublished: false }),
+      ],
+    }),
+  );
+
+  assert.equal(preview.counts.publishes, 0);
+  assert.equal(preview.counts.drafts, 2);
+  assert.equal(preview.counts.draftsOnPublished, 1);
+  assert.equal(preview.published, 'save');
+});
+
+test('the effect of a save says whether a published version is left behind', () => {
+  assert.equal(
+    describeWritePath({ kind: 'save-only' }, true),
+    'Saves a draft. The published version keeps its current shortcuts.',
+  );
+  assert.equal(describeWritePath({ kind: 'save-only' }, false), 'Saves a draft. Nothing is published.');
+  assert.match(describeWritePath({ kind: 'publish-direct' }), /new major version/);
+});
+
 test('rows are ordered by CSV line so they follow the spreadsheet', () => {
   const preview = buildShortcutPreview(
     shortcutPlan({ updates: [change({ line: 9 }), change({ line: 2 }), change({ line: 5 })] }),
@@ -158,7 +195,7 @@ test('blocked rows survive into the preview with their reason', () => {
           line: 4,
           processUniqueId: 'x',
           processName: 'Awaiting one',
-          reason: 'Awaiting approval — not modified.',
+          reason: 'Awaiting approval, so it was not modified.',
         },
       ],
     }),
@@ -215,8 +252,9 @@ test('the shortcut plan downloads as a reviewable CSV', () => {
       updates: [
         change({
           line: 2,
+          lines: [2, 7],
           currentShortcuts: [FINANCE],
-          desired: [existing('grp-legal', 'Legal | Compliance'), planned(0, 'Brand | New')],
+          desired: [existing('grp-legal', 'Legal | Compliance'), existing('grp-new', 'Brand | New')],
         }),
       ],
       clears: [change({ line: 3, currentShortcuts: [LEGAL] })],
@@ -229,8 +267,10 @@ test('the shortcut plan downloads as a reviewable CSV', () => {
   const update = grid[1] as string[];
   assert.equal(update[0], 'Update');
   assert.equal(update[4], '3.0');
-  assert.equal(update[5], 'Legal | Compliance; Brand | New (new)');
+  assert.equal(update[5], 'Legal | Compliance; Brand | New');
   assert.equal(update[6], 'Finance');
+  // Every row that fed the change, because a process gathers shortcuts from several.
+  assert.equal(update[9], '2, 7');
 
   assert.equal((grid[2] as string[])[0], 'Clear');
 });

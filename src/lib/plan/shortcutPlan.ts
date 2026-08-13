@@ -1,29 +1,32 @@
 /**
- * Shortcut planner. Replace semantics: the CSV wins for the data it contains.
+ * Shortcut planner. Additive semantics: the file adds what it names, and takes nothing
+ * away unless a row says so.
  *
- * Pure function of (parsed rows, resolvers) -> plan. Decides *what* changes and *how*
- * it must be written, but performs no I/O — the object it returns is both what the
- * operator approves in the preview and what the executor runs.
+ * Pure function of (parsed processes, resolvers, options) -> plan. Decides *what*
+ * changes and *how* it must be written, but performs no I/O — the object it returns is
+ * both what the operator approves in the preview and what the executor runs.
+ *
+ * Two things it owns that are easy to miss:
+ *
+ *  - **Every row for a process is already folded together** by the parser, so a process
+ *    is planned once, written once, and versioned once however many groups it gains.
+ *  - **Whether a published process is republished is the operator's call**, not a
+ *    property of the process. `options.published` carries that decision, and re-planning
+ *    with a different answer is cheap because nothing here does I/O.
  */
 
 import type { CsvIssue } from '../csv/groups.ts';
-import type { ShortcutCsvRow } from '../csv/shortcuts.ts';
+import type { ShortcutCsvProcess } from '../csv/shortcuts.ts';
+import { isNoInstruction } from '../csv/shortcuts.ts';
 import type { ProcessActions, ProcessGroupRef, ProcessRevisionStateId } from '../pm/types.ts';
 
-/** A group that shortcuts can point at. */
+/** A group that shortcuts can point at. Always one that exists — ids cannot be planned. */
 export interface ResolvedGroup {
-  /** null when this group does not exist yet and will be created earlier in the run. */
-  uniqueId: string | null;
-  /**
-   * Process Manager's numeric group id. Null for a group that does not exist yet —
-   * CreateGroup returns a uniqueId but no numeric id, and the write payload needs
-   * both, which is why the executor refuses to point a shortcut at a group the same
-   * run is creating.
-   */
-  id: number | null;
-  /** Index into the group plan's creates, when uniqueId is null. */
-  plannedSeq: number | null;
+  uniqueId: string;
+  /** Process Manager's numeric group id. The write payload needs both. */
+  id: number;
   name: string;
+  /** Full path, for the preview. Falls back to the name when the path is unknown. */
   display: string;
 }
 
@@ -42,21 +45,33 @@ export interface ProcessSnapshot {
 
 export type ProcessResolution =
   | { kind: 'found'; snapshot: ProcessSnapshot }
-  | { kind: 'missing' }
-  | { kind: 'ambiguous'; candidates: string[] };
+  | { kind: 'missing' };
 
 export interface ShortcutPlanDeps {
-  /** Look up a group by its path key (see csv/path.ts pathKey). */
-  resolveGroup(key: string): ResolvedGroup | null;
-  resolveProcess(row: ShortcutCsvRow): ProcessResolution;
+  /** Look up a group by its unique id, lower-cased. */
+  resolveGroup(uniqueId: string): ResolvedGroup | null;
+  resolveProcess(processId: string): ProcessResolution;
 }
 
 /**
- * How a change must be written, derived from the process state and the caller's
- * permissions on it (DESIGN.md "Publishing").
+ * What to do with a process that is currently published.
+ *
+ * `republish` puts the change live and burns a major version; `save` leaves the change
+ * as an unpublished draft on top of the published version. Drafts and in-progress
+ * revisions are unaffected by this — they are only ever saved (PLAN.md §5.3).
+ */
+export type PublishedBehaviour = 'republish' | 'save';
+
+export interface ShortcutPlanOptions {
+  published?: PublishedBehaviour | undefined;
+}
+
+/**
+ * How a change must be written, derived from the process state, the operator's choice,
+ * and their permissions on it (DESIGN.md "Publishing").
  */
 export type WritePath =
-  /** In progress: one PUT, no publish. Minor version bump only. */
+  /** One PUT, no publish. Minor version bump only. */
   | { kind: 'save-only' }
   /** Published and the user may publish straight after editing. */
   | { kind: 'publish-direct' }
@@ -64,7 +79,10 @@ export type WritePath =
   | { kind: 'submit-then-publish' };
 
 export interface ShortcutChange {
+  /** The first row naming this process. */
   line: number;
+  /** Every row naming it. A process gains several shortcuts from several rows. */
+  lines: number[];
   processUniqueId: string;
   processName: string;
   version: string;
@@ -73,6 +91,12 @@ export interface ShortcutChange {
   desired: ResolvedGroup[];
   currentShortcuts: ProcessGroupRef[];
   writePath: WritePath;
+  /**
+   * The process is published today. With `published: 'save'` that makes the write a
+   * draft sitting on top of a live version, which reads very differently from the same
+   * write on a process that was already in progress.
+   */
+  fromPublished: boolean;
 }
 
 export interface ShortcutUnchanged {
@@ -91,40 +115,46 @@ export interface ShortcutBlocked {
 
 export interface ShortcutPlan {
   updates: ShortcutChange[];
+  /** Changes that end with no shortcuts at all. Their own category, own confirmation. */
   clears: ShortcutChange[];
   unchanged: ShortcutUnchanged[];
   blocked: ShortcutBlocked[];
   warnings: CsvIssue[];
+  /** The behaviour this plan was built with, so the preview cannot describe another. */
+  published: PublishedBehaviour;
 }
 
 export function planShortcuts(
-  rows: readonly ShortcutCsvRow[],
+  processes: readonly ShortcutCsvProcess[],
   deps: ShortcutPlanDeps,
+  options: ShortcutPlanOptions = {},
 ): ShortcutPlan {
+  const published = options.published ?? 'save';
   const plan: ShortcutPlan = {
     updates: [],
     clears: [],
     unchanged: [],
     blocked: [],
     warnings: [],
+    published,
   };
 
-  for (const row of rows) {
-    const label = row.processName ?? row.processId ?? `row ${row.line}`;
+  for (const row of processes) {
+    const label = row.processName ?? row.processId;
 
-    // A row with no shortcut data is a no-op regardless of anything else, so it is
-    // not worth resolving the process or reporting permission problems for it.
-    if (row.intent.kind === 'none') {
+    // A row naming no group is a no-op regardless of anything else, so it is not worth
+    // resolving the process or reporting permission problems for it.
+    if (isNoInstruction(row)) {
       plan.unchanged.push({
         line: row.line,
-        processUniqueId: row.processId ?? '',
+        processUniqueId: row.processId,
         processName: label,
         reason: 'no-data',
       });
       continue;
     }
 
-    const resolution = deps.resolveProcess(row);
+    const resolution = deps.resolveProcess(row.processId);
     if (resolution.kind === 'missing') {
       plan.blocked.push({
         line: row.line,
@@ -134,31 +164,20 @@ export function planShortcuts(
       });
       continue;
     }
-    if (resolution.kind === 'ambiguous') {
-      plan.blocked.push({
-        line: row.line,
-        processUniqueId: null,
-        processName: label,
-        reason:
-          `"${label}" matches ${resolution.candidates.length} processes. ` +
-          `Add a Process ID column to identify the one you mean.`,
-      });
-      continue;
-    }
 
     const snapshot = resolution.snapshot;
 
     if (row.processName && row.processName !== snapshot.name) {
-      // Names drift; the ID is authoritative. Worth surfacing, not worth failing on.
+      // Names drift; the id is authoritative. Worth surfacing, not worth failing on.
       plan.warnings.push({
         line: row.line,
         message:
           `Row ${row.line} says "${row.processName}" but the process is now named ` +
-          `"${snapshot.name}". Using the Process ID.`,
+          `"${snapshot.name}". Matched on the id, not the name.`,
       });
     }
 
-    const desired = resolveTargets(row, deps, plan, label);
+    const desired = resolveDesired(row, snapshot, deps, plan, label);
     if (desired === null) continue;
 
     if (setsMatch(snapshot.currentShortcuts, desired)) {
@@ -171,7 +190,7 @@ export function planShortcuts(
       continue;
     }
 
-    const writePath = chooseWritePath(snapshot);
+    const writePath = chooseWritePath(snapshot, published);
     if (typeof writePath === 'string') {
       plan.blocked.push({
         line: row.line,
@@ -184,6 +203,7 @@ export function planShortcuts(
 
     const change: ShortcutChange = {
       line: row.line,
+      lines: row.lines,
       processUniqueId: snapshot.uniqueId,
       processName: snapshot.name,
       version: snapshot.version,
@@ -191,70 +211,110 @@ export function planShortcuts(
       desired,
       currentShortcuts: snapshot.currentShortcuts,
       writePath,
+      fromPublished: snapshot.revisionStateId === 3,
     };
 
-    if (row.intent.kind === 'clear') plan.clears.push(change);
+    if (desired.length === 0) plan.clears.push(change);
     else plan.updates.push(change);
   }
 
   return plan;
 }
 
-/** Resolve every shortcut path in a row, or record a block and return null. */
-function resolveTargets(
-  row: ShortcutCsvRow,
+/**
+ * Work out the shortcut set the process should end with.
+ *
+ * Starts from what it already has, because the file is additive: anything it does not
+ * mention survives. Returns null when a row cannot be resolved and the process has been
+ * blocked instead.
+ */
+function resolveDesired(
+  row: ShortcutCsvProcess,
+  snapshot: ProcessSnapshot,
   deps: ShortcutPlanDeps,
   plan: ShortcutPlan,
   label: string,
 ): ResolvedGroup[] | null {
-  if (row.intent.kind !== 'set') return [];
+  const block = (reason: string): null => {
+    plan.blocked.push({
+      line: row.line,
+      processUniqueId: row.processId,
+      processName: label,
+      reason,
+    });
+    return null;
+  };
 
-  const out: ResolvedGroup[] = [];
-  for (const target of row.intent.targets) {
-    const group = deps.resolveGroup(target.key);
-    if (!group) {
-      plan.blocked.push({
-        line: row.line,
-        processUniqueId: row.processId,
-        processName: label,
-        reason:
-          `Shortcut group "${target.display}" does not exist. ` +
-          `Create it first, or add it to the group-structure file.`,
+  /** uniqueId -> group, in the order they will be written. */
+  const desired = new Map<string, ResolvedGroup>();
+
+  if (!row.clear) {
+    for (const current of snapshot.currentShortcuts) {
+      const key = current.UniqueId.toLowerCase();
+      // Kept as-is rather than re-resolved: a shortcut into a group we cannot see in
+      // the tree is still one the process has, and dropping it would silently remove it.
+      desired.set(key, {
+        uniqueId: current.UniqueId,
+        id: current.Id,
+        name: current.Name,
+        display: current.Name,
       });
-      return null;
     }
-    out.push(group);
   }
-  return out;
+
+  for (const id of row.add) {
+    const group = deps.resolveGroup(id);
+    if (!group) {
+      return block(
+        `Group ${id} was not found in your tenant. Check the id against the group ` +
+          `hierarchy download.`,
+      );
+    }
+    desired.set(group.uniqueId.toLowerCase(), group);
+  }
+
+  for (const id of row.remove) {
+    const key = id.toLowerCase();
+    if (!desired.delete(key)) {
+      const group = deps.resolveGroup(id);
+      plan.warnings.push({
+        line: row.line,
+        message:
+          `Row ${row.line}: "${snapshot.name}" is not shortcut into ` +
+          `${group ? `"${group.display}"` : `group ${id}`}, so there is nothing to remove.`,
+      });
+    }
+  }
+
+  return [...desired.values()];
 }
 
-/**
- * Compare current shortcuts against the desired set.
- *
- * Groups that do not exist yet can never match current state, so a plan containing
- * one is always a change.
- */
+/** Compare current shortcuts against the desired set, as a set of group ids. */
 function setsMatch(
   currentShortcuts: readonly ProcessGroupRef[],
   desired: readonly ResolvedGroup[],
 ): boolean {
-  if (desired.some((g) => g.uniqueId === null)) return false;
   if (currentShortcuts.length !== desired.length) return false;
-  const current = new Set(currentShortcuts.map((s) => s.UniqueId));
-  return desired.every((g) => current.has(g.uniqueId as string));
+  const current = new Set(currentShortcuts.map((s) => s.UniqueId.toLowerCase()));
+  return desired.every((g) => current.has(g.uniqueId.toLowerCase()));
 }
 
 /** Returns a WritePath, or a plain-language reason the process cannot be written. */
-function chooseWritePath(snapshot: ProcessSnapshot): WritePath | string {
+function chooseWritePath(
+  snapshot: ProcessSnapshot,
+  published: PublishedBehaviour,
+): WritePath | string {
   if (!snapshot.canEdit) {
     return 'You do not have permission to edit this process.';
   }
 
   if (snapshot.revisionStateId === 2) {
     // Someone else is mid-review. Editing underneath them is not ours to do.
-    return 'Awaiting approval — not modified.';
+    return 'Awaiting approval, so it was not modified.';
   }
 
+  // A draft (0.x) or an in-progress revision (x.y) is only ever saved. It has no
+  // published version to disturb, and publishing one was never what the file asked for.
   if (snapshot.revisionStateId === 1) {
     return { kind: 'save-only' };
   }
@@ -263,6 +323,10 @@ function chooseWritePath(snapshot: ProcessSnapshot): WritePath | string {
   if (!snapshot.actions.CanSave) {
     return 'You do not have permission to save changes to this process.';
   }
+  if (published === 'save') {
+    // The published version keeps its current shortcuts; the change waits as a draft.
+    return { kind: 'save-only' };
+  }
   if (snapshot.actions.CanPublishAfterEdit) {
     return { kind: 'publish-direct' };
   }
@@ -270,14 +334,19 @@ function chooseWritePath(snapshot: ProcessSnapshot): WritePath | string {
     return { kind: 'submit-then-publish' };
   }
   return (
-    'Published, but you can neither publish nor submit it for approval, ' +
-    'so the change could not be completed.'
+    'Published, but you can neither publish it nor submit it for approval. ' +
+    'Choose "Save without publishing" to leave the change as a draft instead.'
   );
 }
 
 /** True when the plan would write nothing. */
 export function isNoOp(plan: ShortcutPlan): boolean {
   return plan.updates.length === 0 && plan.clears.length === 0;
+}
+
+/** Processes this plan would republish. The number that matters most on the preview. */
+export function publishCount(plan: ShortcutPlan): number {
+  return [...plan.updates, ...plan.clears].filter((c) => c.writePath.kind !== 'save-only').length;
 }
 
 /** Total PM writes the plan implies, for progress and runtime estimates. */

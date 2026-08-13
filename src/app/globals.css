@@ -324,6 +324,20 @@ label.checkbox input {
   margin-top: 0.25rem;
 }
 
+/* A set of mutually exclusive answers, each with its consequence spelled out. */
+.choices {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.choices .detail {
+  display: block;
+  margin-top: 0.15rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
 .pending {
   margin-top: 1rem;
   color: var(--muted);
