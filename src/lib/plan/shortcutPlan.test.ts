@@ -244,7 +244,7 @@ test('a renamed process warns but still applies', () => {
 // ------------------------------------------------------- write path
 
 test('an in-progress process saves without publishing, whatever the choice', () => {
-  for (const published of ['save', 'republish'] as const) {
+  for (const publish of ['save-only', 'match-state'] as const) {
     const plan = planShortcuts(
       addLegal(),
       {
@@ -254,15 +254,15 @@ test('an in-progress process saves without publishing, whatever the choice', () 
           snapshot: snapshot({ revisionStateId: 1, version: '0.3' }),
         }),
       },
-      { published },
+      { publish },
     );
-    assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' }, published);
+    assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' }, publish);
     assert.equal(plan.updates[0]?.fromPublished, false);
   }
 });
 
 test('a published process is saved as a draft when that is the choice', () => {
-  const plan = planShortcuts(addLegal(), deps(), { published: 'save' });
+  const plan = planShortcuts(addLegal(), deps(), { publish: 'save-only' });
   assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' });
   assert.equal(plan.updates[0]?.fromPublished, true);
   assert.equal(publishCount(plan), 0);
@@ -271,11 +271,32 @@ test('a published process is saved as a draft when that is the choice', () => {
 test('saving is the default, so nothing publishes unless it was asked for', () => {
   const plan = planShortcuts(addLegal(), deps());
   assert.equal(publishCount(plan), 0);
-  assert.equal(plan.published, 'save');
+  assert.equal(plan.publish, 'save-only');
+});
+
+test('match-state cannot publish a process that is already in progress', () => {
+  // The reported bug: picking match-state on a 2.1 process and watching it merely save.
+  // That is correct — there is no published version to replace, and the pending draft
+  // may hold edits that are not ours — but it has to be visible rather than surprising.
+  const plan = planShortcuts(
+    addLegal(),
+    {
+      ...deps(),
+      resolveProcess: () => ({
+        kind: 'found',
+        snapshot: snapshot({ revisionStateId: 1, version: '2.1' }),
+      }),
+    },
+    { publish: 'match-state' },
+  );
+
+  assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' });
+  assert.equal(plan.updates[0]?.fromPublished, false, 'not published, so no draft is left behind');
+  assert.equal(publishCount(plan), 0);
 });
 
 test('a published process publishes directly when permitted and asked for', () => {
-  const plan = planShortcuts(addLegal(), deps(), { published: 'republish' });
+  const plan = planShortcuts(addLegal(), deps(), { publish: 'match-state' });
   assert.deepEqual(plan.updates[0]?.writePath, { kind: 'publish-direct' });
   assert.equal(publishCount(plan), 1);
 });
@@ -294,7 +315,7 @@ test('a published process falls back to the submit-then-publish route', () => {
         }),
       }),
     },
-    { published: 'republish' },
+    { publish: 'match-state' },
   );
   assert.deepEqual(plan.updates[0]?.writePath, { kind: 'submit-then-publish' });
 });
@@ -333,11 +354,11 @@ test('a published process with no publish rights is blocked only when republishi
     }),
   };
 
-  const republish = planShortcuts(addLegal(), cannotPublish, { published: 'republish' });
+  const republish = planShortcuts(addLegal(), cannotPublish, { publish: 'match-state' });
   assert.equal(republish.updates.length, 0);
   assert.match(republish.blocked[0]!.reason, /neither publish it nor submit/);
 
-  const save = planShortcuts(addLegal(), cannotPublish, { published: 'save' });
+  const save = planShortcuts(addLegal(), cannotPublish, { publish: 'save-only' });
   assert.equal(save.updates.length, 1);
   assert.equal(save.blocked.length, 0);
 });
@@ -354,7 +375,7 @@ test('writeCount reflects the cost of each route', () => {
   };
 
   // save + submit + publish
-  assert.equal(writeCount(planShortcuts(addLegal(), submitThenPublish, { published: 'republish' })), 3);
+  assert.equal(writeCount(planShortcuts(addLegal(), submitThenPublish, { publish: 'match-state' })), 3);
   // save only
-  assert.equal(writeCount(planShortcuts(addLegal(), submitThenPublish, { published: 'save' })), 1);
+  assert.equal(writeCount(planShortcuts(addLegal(), submitThenPublish, { publish: 'save-only' })), 1);
 });

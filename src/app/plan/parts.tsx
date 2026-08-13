@@ -13,7 +13,7 @@ import type { CsvIssue } from '@/lib/csv/groups.ts';
 import type { ReportSummary } from '@/lib/exec/report.ts';
 import { ACTION_RECOVERED, type Outcome, type RunSummary } from '@/lib/exec/runner.ts';
 import type { OrphanGroup } from '@/lib/plan/orphans.ts';
-import type { PublishedBehaviour } from '@/lib/plan/shortcutPlan.ts';
+import type { PublishChoice } from '@/lib/plan/shortcutPlan.ts';
 import { audienceChanges, type VisibilityReport } from '@/lib/plan/visibility.ts';
 import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
@@ -434,10 +434,16 @@ function ChangeTable({ rows }: { rows: readonly ShortcutPreviewRow[] }) {
 /**
  * The publish question, asked once for the run.
  *
- * It is asked here rather than answered for them because both answers have a cost and
- * neither is obviously right: republishing burns a major version on every process, and
- * saving leaves the change invisible to readers until someone publishes. Only the person
- * doing it knows which they want.
+ * It is asked rather than answered for them because both answers have a cost and neither
+ * is obviously right: publishing burns a major version on every live process, and saving
+ * leaves the change invisible to readers until someone publishes.
+ *
+ * The labels are the whole point of this panel. An earlier version called the first
+ * option "Republish", which promised something it never did — a process already in
+ * progress is saved under either option — so an operator who picked it and watched a 2.1
+ * process merely save had been told the wrong thing. Both options now say what happens
+ * to each kind of process, and the in-progress count is stated here rather than left to
+ * be discovered in the run report.
  *
  * Changing the answer re-plans, so the counts above and below this panel always describe
  * the option that is currently selected.
@@ -449,58 +455,63 @@ export function PublishChoiceView({
   disabled,
 }: {
   preview: ShortcutPreview;
-  value: PublishedBehaviour;
-  onChange: (next: PublishedBehaviour) => void;
+  value: PublishChoice;
+  onChange: (next: PublishChoice) => void;
   disabled: boolean;
 }) {
-  const affected = preview.counts.publishes + preview.counts.draftsOnPublished;
+  const live = preview.counts.publishes + preview.counts.draftsOnPublished;
+  const { inProgress } = preview.counts;
 
   return (
     <div className="panel">
-      <h2>Published processes</h2>
-      {affected === 0 ? (
-        <p>
-          No process in this file is published, so this choice changes nothing. Drafts and
-          in-progress processes are always saved, never published.
-        </p>
-      ) : (
-        <p>
-          {plural(affected, 'process')} in this file{' '}
-          {affected === 1 ? 'is' : 'are'} published today. Choose what happens to{' '}
-          {affected === 1 ? 'it' : 'them'}. Drafts (0.x) and in-progress versions (x.y) are
-          always saved, never published.
-        </p>
-      )}
+      <h2>Publishing</h2>
+      <ul className="checklist">
+        <li>
+          {live === 0
+            ? 'No process in this file is published, so nothing here can be published.'
+            : `${plural(live, 'process')} in this file ${live === 1 ? 'is' : 'are'} published today.`}
+        </li>
+        {inProgress > 0 && (
+          <li>
+            {plural(inProgress, 'process')} {inProgress === 1 ? 'is' : 'are'} already in
+            progress (0.x or x.y). {inProgress === 1 ? 'It is' : 'They are'} saved under
+            either option. There is no published version to replace, and the pending draft
+            may hold edits that are not yours to publish.
+          </li>
+        )}
+      </ul>
       <div className="choices">
         <label className="checkbox">
           <input
             type="radio"
-            name="published"
-            checked={value === 'save'}
-            onChange={() => onChange('save')}
+            name="publish"
+            checked={value === 'save-only'}
+            onChange={() => onChange('save-only')}
             disabled={disabled}
           />
           <span>
-            <strong>Save without publishing</strong>
+            <strong>Save everything, publish nothing</strong>
             <span className="detail">
-              The shortcut is saved as a new draft. Readers keep seeing the published
-              version, with its current shortcuts, until someone publishes.
+              Every process is saved as a draft. Published ones stay published with their
+              current shortcuts until someone publishes them by hand.
             </span>
           </span>
         </label>
         <label className="checkbox">
           <input
             type="radio"
-            name="published"
-            checked={value === 'republish'}
-            onChange={() => onChange('republish')}
+            name="publish"
+            checked={value === 'match-state'}
+            onChange={() => onChange('match-state')}
             disabled={disabled}
           />
           <span>
-            <strong>Republish</strong>
+            <strong>Match each process&rsquo;s current state</strong>
             <span className="detail">
-              Each published process gets a new major version, live immediately. Change
-              notifications are suppressed, so nobody is emailed.
+              Published processes are republished, so the change is live straight away and
+              they gain a major version. Drafts and in-progress processes are saved and
+              left unpublished. Change notifications are suppressed either way, so nobody
+              is emailed.
             </span>
           </span>
         </label>
@@ -518,6 +529,9 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
           { label: 'left with none', value: preview.counts.clears, loud: preview.counts.clears > 0 },
           { label: 'republished', value: preview.counts.publishes, loud: true },
           { label: 'saved as drafts', value: preview.counts.drafts },
+          // Sits beside the publish count on purpose: it is the difference between the
+          // two, and the answer to "why is republished lower than I expected?".
+          { label: 'in progress already', value: preview.counts.inProgress },
           { label: 'unchanged', value: preview.counts.unchanged },
           { label: 'blocked', value: preview.counts.blocked },
         ]}
@@ -554,7 +568,29 @@ export function ShortcutPreviewView({ preview }: { preview: ShortcutPreview }) {
           <ul className="checklist">
             <li>The shortcut is saved but not published.</li>
             <li>Readers keep seeing the current published version until someone publishes.</li>
-            <li>Pick Republish above if you want the change live now.</li>
+            <li>Pick &ldquo;Match each process&rsquo;s current state&rdquo; to make it live now.</li>
+          </ul>
+        </div>
+      )}
+
+      {preview.counts.inProgress > 0 && (
+        <div className="panel">
+          <h2>
+            {plural(preview.counts.inProgress, 'process')} already in progress
+          </h2>
+          <ul className="checklist">
+            <li>
+              These are at 0.x or x.y, so they are saved rather than published. Neither
+              option changes that.
+            </li>
+            <li>
+              They gain a minor version. Someone has to publish them in Process Manager
+              for the shortcut to reach readers.
+            </li>
+            <li>
+              A process lands here if it was published but already had an unfinished
+              draft, including one an earlier run of this tool left behind.
+            </li>
           </ul>
         </div>
       )}

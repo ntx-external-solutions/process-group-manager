@@ -357,7 +357,7 @@ function shortcutPlan(over: Partial<ShortcutPlan> = {}): ShortcutPlan {
     unchanged: [],
     blocked: [],
     warnings: [],
-    published: 'republish',
+    publish: 'match-state',
     ...over,
   };
 }

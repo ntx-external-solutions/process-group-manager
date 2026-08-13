@@ -43,7 +43,7 @@ test('rows blocked before the run are counted, not quietly dropped', () => {
       clears: [],
       unchanged: [],
       warnings: [],
-      published: 'save',
+      publish: 'save-only',
       blocked: [
         { line: 4, processUniqueId: 'x', processName: 'Awaiting', reason: 'Awaiting approval, so it was not modified.' },
       ],
@@ -109,7 +109,7 @@ test('a row blocked before the run still needs attention', () => {
       clears: [],
       unchanged: [],
       warnings: [],
-      published: 'save',
+      publish: 'save-only',
       blocked: [
         {
           line: 5,

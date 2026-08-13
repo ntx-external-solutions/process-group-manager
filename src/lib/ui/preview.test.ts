@@ -47,7 +47,7 @@ function shortcutPlan(over: Partial<ShortcutPlan> = {}): ShortcutPlan {
     unchanged: [],
     blocked: [],
     warnings: [],
-    published: 'republish',
+    publish: 'match-state',
     ...over,
   };
 }
@@ -147,7 +147,7 @@ test('a draft left on a published process is counted on its own', () => {
   // shortcuts. That case needs its own number, not a share of the draft count.
   const preview = buildShortcutPreview(
     shortcutPlan({
-      published: 'save',
+      publish: 'save-only',
       updates: [
         change({ line: 2, writePath: { kind: 'save-only' }, fromPublished: true }),
         change({ line: 3, writePath: { kind: 'save-only' }, fromPublished: false }),
@@ -158,7 +158,27 @@ test('a draft left on a published process is counted on its own', () => {
   assert.equal(preview.counts.publishes, 0);
   assert.equal(preview.counts.drafts, 2);
   assert.equal(preview.counts.draftsOnPublished, 1);
-  assert.equal(preview.published, 'save');
+  assert.equal(preview.counts.inProgress, 1);
+  assert.equal(preview.publish, 'save-only');
+});
+
+test('processes already in progress are counted, whatever the choice', () => {
+  // The number that answers "why did picking match-state publish nothing?". Without it
+  // the only evidence is the run report, after the fact.
+  const preview = buildShortcutPreview(
+    shortcutPlan({
+      publish: 'match-state',
+      updates: [
+        change({ line: 2, writePath: { kind: 'publish-direct' }, fromPublished: true }),
+        change({ line: 3, writePath: { kind: 'save-only' }, fromPublished: false }),
+        change({ line: 4, writePath: { kind: 'save-only' }, fromPublished: false }),
+      ],
+    }),
+  );
+
+  assert.equal(preview.counts.publishes, 1);
+  assert.equal(preview.counts.inProgress, 2);
+  assert.equal(preview.counts.draftsOnPublished, 0, 'match-state leaves no draft on a live process');
 });
 
 test('the effect of a save says whether a published version is left behind', () => {
@@ -166,7 +186,12 @@ test('the effect of a save says whether a published version is left behind', () 
     describeWritePath({ kind: 'save-only' }, true),
     'Saves a draft. The published version keeps its current shortcuts.',
   );
-  assert.equal(describeWritePath({ kind: 'save-only' }, false), 'Saves a draft. Nothing is published.');
+  // The wording that was missing when "republish" appeared to do nothing: an
+  // in-progress process is saved under either choice, and the row says why.
+  assert.equal(
+    describeWritePath({ kind: 'save-only' }, false),
+    'Already in progress, so it is saved. Nothing to republish.',
+  );
   assert.match(describeWritePath({ kind: 'publish-direct' }), /new major version/);
 });
 

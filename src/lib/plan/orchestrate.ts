@@ -20,7 +20,7 @@ import { planGroups, type GroupPlan } from './groupPlan.ts';
 import {
   planShortcuts,
   type ProcessResolution,
-  type PublishedBehaviour,
+  type PublishChoice,
   type ResolvedGroup,
   type ShortcutPlan,
   type ShortcutPlanDeps,
@@ -229,7 +229,7 @@ export interface ShortcutPlanResult {
    * Re-plan against the same reads with a different publish choice.
    *
    * Changing that answer changes which processes are blocked as well as how they are
-   * written, so it cannot be applied to a finished plan — but nothing in planning does
+   * written, so it cannot be patched onto a finished plan — but nothing in planning does
    * I/O, so re-running it costs nothing and needs no second pass over the tenant.
    */
   replan(options: ShortcutPlanOptions): ShortcutPlan;
@@ -249,7 +249,7 @@ export async function buildShortcutPlan(
   options: {
     concurrency?: number;
     onProgress?: Progress;
-    published?: PublishedBehaviour | undefined;
+    publish?: PublishChoice | undefined;
   } = {},
 ): Promise<ShortcutPlanResult> {
   const concurrency = Math.max(1, options.concurrency ?? 4);
@@ -313,7 +313,7 @@ export async function buildShortcutPlan(
     planShortcuts(processes, deps, planOptions);
 
   return {
-    plan: replan({ published: options.published ?? 'save' }),
+    plan: replan({ publish: options.publish ?? 'save-only' }),
     unreadable,
     replan,
   };

@@ -457,21 +457,37 @@ readable thing a preview can show for an id.
 Branching on `ProcessRevisionStateId`, `processActions`, and the operator's answer to
 the publish question:
 
-| State | `published: 'save'` | `published: 'republish'` |
+| State | `publish: 'save-only'` | `publish: 'match-state'` |
 |---|---|---|
 | **3 — published** | Single `PUT`, no publish. Minor bump; the live version keeps its old shortcuts until someone publishes. | `PUT` (save, minor bump) → publish. If `CanPublishAfterEdit` → `POST …/Publish` directly. Else `PUT DoSubmitForApproval:true` → `POST …/Publish`. |
-| **1 — in progress** (0.x drafts and x.y) | Single `PUT`, `DoPublish:false`, no publish. Minor bump only, per the brief. | Same. The choice does not apply: there is no published version to disturb. |
+| **1 — in progress** (0.x drafts and x.y) | Single `PUT`, `DoPublish:false`, no publish. Minor bump only, per the brief. | **Same.** The choice cannot apply: there is no published version to replace, and the pending draft may hold edits that are not ours to publish. |
 | **2 — awaiting approval** | **Blocked. Not touched.** Editing a process mid-approval would disturb someone else's review. | Same. |
 
 `SuppressChangeNotification: true` on **every** write.
 
 **The publish question is asked, not answered for them.** Both answers cost something —
-republishing burns a major version on every published process, and saving leaves the
-change invisible to readers — and only the operator knows which they want. It is one
-choice for the whole run, made on the preview screen, and it **re-plans**: the answer
-changes which processes are blocked as well as how they are written, so the plan they
-approve is the one their answer produced. Re-planning is free because planning does no
-I/O. The default is `save`, so nothing publishes without being asked for.
+publishing burns a major version on every live process, and saving leaves the change
+invisible to readers — and only the operator knows which they want. It is one choice for
+the whole run, made on the preview screen, and it **re-plans**: the answer changes which
+processes are blocked as well as how they are written, so the plan they approve is the
+one their answer produced. Re-planning is free because planning does no I/O. The default
+is `save-only`, so nothing publishes without being asked for.
+
+#### Why the option is called "match state" and not "republish"
+
+It was called *Republish*, and that was a lie by omission: the middle row of the table
+above means a process already in progress is only ever saved. An operator who picked
+Republish on a 2.1 process watched it save and reported a bug against writes that were
+working exactly as designed.
+
+The trap has a ratchet in it. A run with `save-only` moves a published 2.0 process to
+2.1 **in progress** — so the next run, even with the other option chosen, can no longer
+publish it. The tool creates the pending draft and then declines to publish it. That is
+the right call (the draft may not be ours to publish) but it has to be *said*: the
+preview counts in-progress processes separately, states the count above the choice, and
+each row's effect reads "Already in progress, so it is saved. Nothing to republish."
+
+The option now describes the whole rule rather than the published half of it.
 
 A process is also `blocked` when `EditPermissions.CanEdit` is false, or when it is
 published, the operator chose to republish, and they can neither publish after edit nor

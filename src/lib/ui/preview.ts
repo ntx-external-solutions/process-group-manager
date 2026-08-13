@@ -196,15 +196,16 @@ export function diffShortcuts(
  * What a write does, in the operator's terms.
  *
  * A save on a published process is not the same event as a save on one already in
- * progress, and calling both "saves a draft" would hide the part that surprises people:
- * the live version keeps the shortcuts it has until somebody publishes.
+ * progress. Calling both "saves a draft" hid the two things people actually ask about:
+ * that a live version keeps its old shortcuts until somebody publishes, and that a
+ * process already in progress was never going to publish whatever was chosen.
  */
 export function describeWritePath(writePath: WritePath, fromPublished = false): string {
   switch (writePath.kind) {
     case 'save-only':
       return fromPublished
         ? 'Saves a draft. The published version keeps its current shortcuts.'
-        : 'Saves a draft. Nothing is published.';
+        : 'Already in progress, so it is saved. Nothing to republish.';
     case 'publish-direct':
       return 'Publishes a new major version.';
     case 'submit-then-publish':
@@ -240,6 +241,12 @@ export interface ShortcutPreviewCounts {
   drafts: number;
   /** Drafts that sit on top of a published version, which is the surprising case. */
   draftsOnPublished: number;
+  /**
+   * Changes to processes already in progress. They are saved under either choice, so
+   * this is the number that explains why picking "match state" published fewer
+   * processes than the file names.
+   */
+  inProgress: number;
 }
 
 export interface ShortcutPreview {
@@ -252,7 +259,7 @@ export interface ShortcutPreview {
   /** Total PM writes implied — publishes cost two or three requests, not one. */
   writes: number;
   /** The publish choice this preview was built from. */
-  published: ShortcutPlan['published'];
+  publish: ShortcutPlan['publish'];
   isNoOp: boolean;
 }
 
@@ -293,9 +300,10 @@ export function buildShortcutPreview(plan: ShortcutPlan): ShortcutPreview {
       publishes,
       drafts: all.length - publishes,
       draftsOnPublished: all.filter((r) => !r.publishes && r.fromPublished).length,
+      inProgress: all.filter((r) => !r.fromPublished).length,
     },
     writes: writeCount(plan),
-    published: plan.published,
+    publish: plan.publish,
     isNoOp: all.length === 0,
   };
 }

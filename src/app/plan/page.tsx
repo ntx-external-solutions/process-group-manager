@@ -22,7 +22,7 @@ import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/li
 import { runPlan, type Outcome, type RunProgress, type RunSummary } from '@/lib/exec/runner.ts';
 import type { GroupPlan } from '@/lib/plan/groupPlan.ts';
 import { findOrphanGroups, type OrphanGroup } from '@/lib/plan/orphans.ts';
-import type { PublishedBehaviour, ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
+import type { PublishChoice, ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
 import { groupTemplate, groupExport, shortcutTemplate } from '@/lib/csv/template.ts';
@@ -93,10 +93,10 @@ export default function PlanPage() {
   const [shortcutPreview, setShortcutPreview] = useState<ShortcutPreview | null>(null);
   const [clearsAcknowledged, setClearsAcknowledged] = useState(false);
 
-  // What to do with processes that are published today. Re-planning is free once the
-  // reads are done, so the choice re-derives the plan rather than being handed to the
-  // runner: the operator approves the plan their answer produced, not another one.
-  const [published, setPublished] = useState<PublishedBehaviour>('save');
+  // Whether this run publishes anything. Re-planning is free once the reads are done,
+  // so the choice re-derives the plan rather than being handed to the runner: the
+  // operator approves the plan their answer produced, not another one.
+  const [publish, setPublish] = useState<PublishChoice>('save-only');
   const replanRef = useRef<ShortcutPlanResult['replan'] | null>(null);
 
   // The previews are for reading; these are what actually gets executed. Keeping both
@@ -157,7 +157,7 @@ export default function PlanPage() {
     setGroupPlan(null);
     setShortcutPlan(null);
     setClearsAcknowledged(false);
-    setPublished('save');
+    setPublish('save-only');
     replanRef.current = null;
     setRunSummary(null);
     setProgress(null);
@@ -314,8 +314,10 @@ export default function PlanPage() {
     const groups = indexGroupsById(tree);
 
     setBusy('Reading the processes…');
+    // Not the `publish` state: resetResults has only just scheduled it back to the
+    // default, and reading it here would plan against the previous file's answer.
     const result = await buildShortcutPlan(gateway, parsed.processes, groups, {
-      published,
+      publish: 'save-only',
       onProgress: (event) =>
         setBusy(`Reading the processes… ${event.done} of ${event.total ?? '?'}`),
     });
@@ -332,11 +334,11 @@ export default function PlanPage() {
   }
 
   /** Answer the publish question, and re-derive the plan from the same reads. */
-  function choosePublished(next: PublishedBehaviour) {
-    setPublished(next);
+  function choosePublish(next: PublishChoice) {
+    setPublish(next);
     const replan = replanRef.current;
     if (!replan) return;
-    const plan = replan({ published: next });
+    const plan = replan({ publish: next });
     setShortcutPreview(buildShortcutPreview(plan));
     setShortcutPlan(plan);
     setClearsAcknowledged(false);
@@ -666,8 +668,8 @@ export default function PlanPage() {
           <h2 className="section">What would happen</h2>
           <PublishChoiceView
             preview={shortcutPreview}
-            value={published}
-            onChange={choosePublished}
+            value={publish}
+            onChange={choosePublish}
             disabled={running || runSummary !== null}
           />
           <ShortcutPreviewView preview={shortcutPreview} />

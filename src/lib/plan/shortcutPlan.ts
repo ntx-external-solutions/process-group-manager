@@ -10,9 +10,9 @@
  *
  *  - **Every row for a process is already folded together** by the parser, so a process
  *    is planned once, written once, and versioned once however many groups it gains.
- *  - **Whether a published process is republished is the operator's call**, not a
- *    property of the process. `options.published` carries that decision, and re-planning
- *    with a different answer is cheap because nothing here does I/O.
+ *  - **Whether anything is published is the operator's call**, not a property of the
+ *    process. `options.publish` carries that decision, and re-planning with a different
+ *    answer is cheap because nothing here does I/O.
  */
 
 import type { CsvIssue } from '../csv/groups.ts';
@@ -54,16 +54,29 @@ export interface ShortcutPlanDeps {
 }
 
 /**
- * What to do with a process that is currently published.
+ * What publishing this run does.
  *
- * `republish` puts the change live and burns a major version; `save` leaves the change
- * as an unpublished draft on top of the published version. Drafts and in-progress
- * revisions are unaffected by this — they are only ever saved (PLAN.md §5.3).
+ * Named for what actually happens rather than for the published case alone, because
+ * the earlier name ("republish") promised something it never did: a process already in
+ * progress is only ever saved, whatever is chosen here, so an operator who picked
+ * "republish" and watched a 2.1 process merely save had been told the wrong thing.
  */
-export type PublishedBehaviour = 'republish' | 'save';
+export type PublishChoice =
+  /**
+   * Leave each process in the state it is in. A published process is republished, so
+   * the change is live; a draft (0.x) or in-progress revision (x.y) is saved and left
+   * unpublished, because there is no published version to replace and its draft may
+   * hold edits that are not ours to publish.
+   */
+  | 'match-state'
+  /**
+   * Publish nothing at all. Even a published process only gets a draft, and readers go
+   * on seeing its current shortcuts until someone publishes it.
+   */
+  | 'save-only';
 
 export interface ShortcutPlanOptions {
-  published?: PublishedBehaviour | undefined;
+  publish?: PublishChoice | undefined;
 }
 
 /**
@@ -92,9 +105,10 @@ export interface ShortcutChange {
   currentShortcuts: ProcessGroupRef[];
   writePath: WritePath;
   /**
-   * The process is published today. With `published: 'save'` that makes the write a
-   * draft sitting on top of a live version, which reads very differently from the same
-   * write on a process that was already in progress.
+   * The process is published today. A save on one of these leaves a draft sitting on
+   * top of a live version, which reads very differently from the same write on a
+   * process that was already in progress — and it is the difference between a choice
+   * that did nothing and one that could not apply.
    */
   fromPublished: boolean;
 }
@@ -120,8 +134,8 @@ export interface ShortcutPlan {
   unchanged: ShortcutUnchanged[];
   blocked: ShortcutBlocked[];
   warnings: CsvIssue[];
-  /** The behaviour this plan was built with, so the preview cannot describe another. */
-  published: PublishedBehaviour;
+  /** The choice this plan was built with, so the preview cannot describe another. */
+  publish: PublishChoice;
 }
 
 export function planShortcuts(
@@ -129,14 +143,14 @@ export function planShortcuts(
   deps: ShortcutPlanDeps,
   options: ShortcutPlanOptions = {},
 ): ShortcutPlan {
-  const published = options.published ?? 'save';
+  const publish = options.publish ?? 'save-only';
   const plan: ShortcutPlan = {
     updates: [],
     clears: [],
     unchanged: [],
     blocked: [],
     warnings: [],
-    published,
+    publish,
   };
 
   for (const row of processes) {
@@ -190,7 +204,7 @@ export function planShortcuts(
       continue;
     }
 
-    const writePath = chooseWritePath(snapshot, published);
+    const writePath = chooseWritePath(snapshot, publish);
     if (typeof writePath === 'string') {
       plan.blocked.push({
         line: row.line,
@@ -302,7 +316,7 @@ function setsMatch(
 /** Returns a WritePath, or a plain-language reason the process cannot be written. */
 function chooseWritePath(
   snapshot: ProcessSnapshot,
-  published: PublishedBehaviour,
+  publish: PublishChoice,
 ): WritePath | string {
   if (!snapshot.canEdit) {
     return 'You do not have permission to edit this process.';
@@ -313,8 +327,11 @@ function chooseWritePath(
     return 'Awaiting approval, so it was not modified.';
   }
 
-  // A draft (0.x) or an in-progress revision (x.y) is only ever saved. It has no
-  // published version to disturb, and publishing one was never what the file asked for.
+  // A draft (0.x) or an in-progress revision (x.y) is only ever saved, under either
+  // choice. There is no published version to replace, and the pending draft may carry
+  // someone else's unfinished edits — publishing it would push those live along with
+  // the shortcut. This is the branch that makes "match-state" look like it did nothing,
+  // so the preview counts these separately and says so.
   if (snapshot.revisionStateId === 1) {
     return { kind: 'save-only' };
   }
@@ -323,7 +340,7 @@ function chooseWritePath(
   if (!snapshot.actions.CanSave) {
     return 'You do not have permission to save changes to this process.';
   }
-  if (published === 'save') {
+  if (publish === 'save-only') {
     // The published version keeps its current shortcuts; the change waits as a draft.
     return { kind: 'save-only' };
   }
@@ -335,7 +352,7 @@ function chooseWritePath(
   }
   return (
     'Published, but you can neither publish it nor submit it for approval. ' +
-    'Choose "Save without publishing" to leave the change as a draft instead.'
+    'Choose "Save everything, publish nothing" to leave the change as a draft instead.'
   );
 }
 

@@ -187,7 +187,7 @@ test('fetches process state and plans an update', async () => {
   ).processes;
 
   const { plan, unreadable } = await buildShortcutPlan(g.impl, rows, groupIndex(legal), {
-    published: 'republish',
+    publish: 'match-state',
   });
   assert.deepEqual(unreadable, []);
   assert.equal(plan.updates.length, 1);
@@ -215,11 +215,11 @@ test('re-planning applies a different publish choice without reading again', asy
   ).processes;
 
   const { plan, replan } = await buildShortcutPlan(impl, rows, groupIndex(legal), {
-    published: 'save',
+    publish: 'save-only',
   });
   assert.deepEqual(plan.updates[0]?.writePath, { kind: 'save-only' });
 
-  const republished = replan({ published: 'republish' });
+  const republished = replan({ publish: 'match-state' });
   assert.deepEqual(republished.updates[0]?.writePath, { kind: 'publish-direct' });
   assert.equal(reads, 1, 'the tenant is read once, whatever the operator picks');
 });
