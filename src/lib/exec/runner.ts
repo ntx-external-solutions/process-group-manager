@@ -19,7 +19,15 @@
  */
 
 import { matchKey, pathKey } from '../csv/path.ts';
+import { regionKey } from '../csv/champions.ts';
 import { PLACEHOLDER_GROUP_NAME } from '../pm/groups.ts';
+import type { GroupChampions } from '../pm/champions.ts';
+import type {
+  ChampionPlan,
+  ChampionTarget,
+  PrimaryChampionAction,
+  RegionalChampionAction,
+} from '../plan/championPlan.ts';
 import type { GroupPlan } from '../plan/groupPlan.ts';
 import type { ShortcutChange, ShortcutPlan } from '../plan/shortcutPlan.ts';
 import { expectedVersion } from '../plan/version.ts';
@@ -63,6 +71,15 @@ export interface ExecGateway {
   processSummary(processUniqueId: string): Promise<ProcessSummary>;
   /** Reads one level of the tree — the evidence behind orphan recovery. */
   childGroups(parentUniqueId: string | null): Promise<TreeItem[]>;
+  /** null removes the group's primary champion. */
+  setPrimaryChampion(groupUniqueId: string, championId: number | null): Promise<unknown>;
+  /** The complete regional list; an empty array removes them all. */
+  setRegionalChampions(
+    groupUniqueId: string,
+    champions: ReadonlyArray<{ userId: number; region: string }>,
+  ): Promise<unknown>;
+  /** Read back after a regional write, to check the replace did what we assumed. */
+  groupChampions(groupUniqueId: string): Promise<GroupChampions>;
 }
 
 /**
@@ -86,7 +103,7 @@ export interface Outcome {
 }
 
 export interface RunProgress {
-  phase: 'groups' | 'shortcuts';
+  phase: 'groups' | 'champions' | 'shortcuts';
   done: number;
   total: number;
   label: string;
@@ -94,6 +111,11 @@ export interface RunProgress {
 
 export interface RunInput {
   groupPlan?: GroupPlan | null | undefined;
+  /**
+   * Champion changes. Runs after the group plan and never without it, because an action
+   * may name a group by the sequence number of a create only that plan can fulfil.
+   */
+  championPlan?: ChampionPlan | null | undefined;
   shortcutPlan?: ShortcutPlan | null | undefined;
 }
 
@@ -158,13 +180,20 @@ export async function runPlan(
     return false;
   };
 
+  const controls: Controls = {
+    cancelled,
+    stop,
+    isFatal,
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  };
+
+  let createdBySeq: ReadonlyMap<number, string> = new Map();
   if (input.groupPlan) {
-    await runGroups(gateway, journal, input.groupPlan, outcomes, {
-      cancelled,
-      stop,
-      isFatal,
-      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
-    });
+    createdBySeq = await runGroups(gateway, journal, input.groupPlan, outcomes, controls);
+  }
+
+  if (input.championPlan && !state.stopped) {
+    await runChampions(gateway, journal, input.championPlan, createdBySeq, outcomes, controls);
   }
 
   if (input.shortcutPlan && !state.stopped) {
@@ -271,18 +300,21 @@ async function runGroups(
   plan: GroupPlan,
   outcomes: Outcome[],
   controls: Controls,
-): Promise<void> {
+): Promise<ReadonlyMap<number, string>> {
   const total =
     plan.renames.length + plan.creates.length + plan.moves.length;
   const progress = { done: 0, total };
 
   await runRenames(gateway, journal, plan, outcomes, controls, progress);
-  if (controls.cancelled()) return;
+  if (controls.cancelled()) return new Map();
 
+  // Returned even when the run stops here: the champion phase will not run, but the ids
+  // of groups this run did create are what a resume needs to avoid making them twice.
   const createdBySeq = await runCreates(gateway, journal, plan, outcomes, controls, progress);
-  if (controls.cancelled()) return;
+  if (controls.cancelled()) return createdBySeq;
 
   await runMoves(gateway, journal, plan, outcomes, controls, progress, createdBySeq);
+  return createdBySeq;
 }
 
 interface GroupProgress {
@@ -797,7 +829,7 @@ async function verifyNames(
   for (const create of ctx.creates) {
     if (!ctx.createdBySeq.has(create.seq)) continue;
     const parent = ctx.parentBySeq.get(create.seq) ?? null;
-    const key = parent ?? ' root';
+    const key = parent ?? '\u0000root';
     const entry = byParent.get(key) ?? { parent, seqs: [] };
     entry.seqs.push(create.seq);
     byParent.set(key, entry);
@@ -929,6 +961,255 @@ function readCommittedId(journal: Journal, stepName: string): string | null {
   const data = journal.commitData(stepName);
   const uniqueId = data?.['uniqueId'];
   return typeof uniqueId === 'string' && uniqueId !== '' ? uniqueId : null;
+}
+
+// ------------------------------------------------------------- champions
+
+export const ACTION_CHAMPION = 'champion.assign';
+export const ACTION_CHAMPION_REMOVE = 'champion.remove';
+export const ACTION_CHAMPION_REGIONAL = 'champion.regional';
+
+/**
+ * Resolve an action's group to a real id.
+ *
+ * A champion can be set on a group this same run creates, in which case the plan names
+ * the create's sequence number and the id only exists once that create has succeeded.
+ * Null means it did not, and the champion is skipped rather than applied to nothing.
+ */
+function targetId(
+  target: ChampionTarget,
+  createdBySeq: ReadonlyMap<number, string>,
+): string | null {
+  return target.kind === 'existing' ? target.uniqueId : createdBySeq.get(target.seq) ?? null;
+}
+
+function describePeople(people: RegionalChampionAction['people']): string {
+  return people.map((p) => `${p.region}: ${p.displayName}`).join('; ');
+}
+
+/**
+ * Apply the champion changes.
+ *
+ * Both writes set state rather than adding to it, so both are safe to repeat — which is
+ * why an interrupted one is retried here rather than reported as unknown the way a move
+ * is. What is *not* assumed is that the regional endpoint replaces rather than merges:
+ * every regional write is read back and any difference is reported.
+ *
+ * Serial, like the group creates: there are tens of these, not thousands, and each one
+ * grants somebody the ability to restructure a branch.
+ */
+async function runChampions(
+  gateway: ExecGateway,
+  journal: Journal,
+  plan: ChampionPlan,
+  createdBySeq: ReadonlyMap<number, string>,
+  outcomes: Outcome[],
+  controls: Controls,
+): Promise<void> {
+  const total = plan.primary.length + plan.regional.length;
+  const progress = { done: 0, total };
+
+  for (const action of plan.primary) {
+    if (controls.cancelled()) return;
+    await runPrimaryChampion(gateway, journal, action, createdBySeq, outcomes, controls, progress);
+  }
+
+  for (const action of plan.regional) {
+    if (controls.cancelled()) return;
+    await runRegionalChampions(gateway, journal, action, createdBySeq, outcomes, controls, progress);
+  }
+}
+
+async function runPrimaryChampion(
+  gateway: ExecGateway,
+  journal: Journal,
+  action: PrimaryChampionAction,
+  createdBySeq: ReadonlyMap<number, string>,
+  outcomes: Outcome[],
+  controls: Controls,
+  progress: GroupProgress,
+): Promise<void> {
+  const wanted = action.person;
+  const after = wanted === null ? 'nobody' : `${wanted.displayName} (${wanted.logon})`;
+
+  controls.onProgress?.({
+    phase: 'champions',
+    done: progress.done,
+    total: progress.total,
+    label: `${action.display}: ${after}`,
+  });
+  progress.done++;
+
+  const record = (result: OutcomeResult, detail: string, uniqueId: string | null): void => {
+    outcomes.push({
+      type: 'group',
+      target: action.display,
+      targetId: uniqueId,
+      action: wanted === null ? ACTION_CHAMPION_REMOVE : ACTION_CHAMPION,
+      result,
+      before: action.before ?? '',
+      after: result === 'ok' ? after : '',
+      detail,
+      line: action.line,
+    });
+  };
+
+  const stepName = step.championPrimary(action.key);
+  if (journal.isCommitted(stepName)) {
+    record('skipped', 'Already set by an earlier run in this tab.', targetId(action.target, createdBySeq));
+    return;
+  }
+
+  const uniqueId = targetId(action.target, createdBySeq);
+  if (uniqueId === null) {
+    record('skipped', `The group was not created, so it has no champion to set.`, null);
+    return;
+  }
+
+  journal.append({
+    step: stepName,
+    kind: 'group.champion',
+    phase: 'begin',
+    data: { uniqueId, championId: wanted?.userId ?? null },
+  });
+
+  try {
+    await gateway.setPrimaryChampion(uniqueId, wanted?.userId ?? null);
+    journal.append({
+      step: stepName,
+      kind: 'group.champion',
+      phase: 'commit',
+      data: { uniqueId, championId: wanted?.userId ?? null },
+    });
+    record('ok', '', uniqueId);
+  } catch (error) {
+    journal.append({ step: stepName, kind: 'group.champion', phase: 'fail' });
+    const fatal = controls.isFatal(error);
+    record('failed', message(error), uniqueId);
+    if (fatal) controls.stop(fatal);
+  }
+}
+
+async function runRegionalChampions(
+  gateway: ExecGateway,
+  journal: Journal,
+  action: RegionalChampionAction,
+  createdBySeq: ReadonlyMap<number, string>,
+  outcomes: Outcome[],
+  controls: Controls,
+  progress: GroupProgress,
+): Promise<void> {
+  const after = action.people.length === 0 ? 'nobody' : describePeople(action.people);
+
+  controls.onProgress?.({
+    phase: 'champions',
+    done: progress.done,
+    total: progress.total,
+    label: `${action.display}: regional champions`,
+  });
+  progress.done++;
+
+  const record = (result: OutcomeResult, detail: string, uniqueId: string | null): void => {
+    outcomes.push({
+      type: 'group',
+      target: action.display,
+      targetId: uniqueId,
+      action: ACTION_CHAMPION_REGIONAL,
+      result,
+      before: action.before.map((entry) => `${entry.region}: ${entry.name}`).join('; '),
+      after: result === 'ok' ? after : '',
+      detail,
+      line: action.line,
+    });
+  };
+
+  const stepName = step.championRegional(action.key);
+  if (journal.isCommitted(stepName)) {
+    record('skipped', 'Already set by an earlier run in this tab.', targetId(action.target, createdBySeq));
+    return;
+  }
+
+  const uniqueId = targetId(action.target, createdBySeq);
+  if (uniqueId === null) {
+    record('skipped', 'The group was not created, so it has no champions to set.', null);
+    return;
+  }
+
+  const payload = action.people.map((person) => ({ userId: person.userId, region: person.region }));
+
+  journal.append({
+    step: stepName,
+    kind: 'group.regionalChampions',
+    phase: 'begin',
+    data: { uniqueId, count: payload.length },
+  });
+
+  try {
+    await gateway.setRegionalChampions(uniqueId, payload);
+  } catch (error) {
+    journal.append({ step: stepName, kind: 'group.regionalChampions', phase: 'fail' });
+    const fatal = controls.isFatal(error);
+    record('failed', message(error), uniqueId);
+    if (fatal) controls.stop(fatal);
+    return;
+  }
+
+  journal.append({
+    step: stepName,
+    kind: 'group.regionalChampions',
+    phase: 'commit',
+    data: { uniqueId, count: payload.length },
+  });
+
+  record('ok', await verifyRegional(gateway, uniqueId, payload), uniqueId);
+}
+
+/**
+ * Read the regional champions back.
+ *
+ * The write is documented nowhere: the admin screen sends the whole array, so we take it
+ * to replace what is there — but "we assume it replaces" is not something to leave in a
+ * report about who can administer a branch. A mismatch is reported as detail on a step
+ * that did happen, not as a failure, because the write itself succeeded.
+ */
+async function verifyRegional(
+  gateway: ExecGateway,
+  uniqueId: string,
+  wanted: ReadonlyArray<{ userId: number; region: string }>,
+): Promise<string> {
+  let actual: GroupChampions;
+  try {
+    actual = await gateway.groupChampions(uniqueId);
+  } catch {
+    // Verification is a safety net, not a gate.
+    return '';
+  }
+
+  const key = (entry: { userId: number; region: string }): string =>
+    `${entry.userId}@${regionKey(entry.region)}`;
+  const wantedKeys = new Set(wanted.map(key));
+  const actualKeys = new Set(actual.regional.map(key));
+
+  const missing = wanted.filter((entry) => !actualKeys.has(key(entry)));
+  const extra = actual.regional.filter((entry) => !wantedKeys.has(key(entry)));
+
+  if (missing.length === 0 && extra.length === 0) return '';
+
+  const parts: string[] = [];
+  if (missing.length > 0) {
+    parts.push(`${missing.length} of them did not take`);
+  }
+  if (extra.length > 0) {
+    // The interesting case: the endpoint added to the list instead of replacing it, so
+    // people the file left out are still regional champions of this group.
+    parts.push(
+      `${extra.map((e) => `${e.region}: ${e.name}`).join('; ')} ${
+        extra.length === 1 ? 'is' : 'are'
+      } still set, which this file did not list`,
+    );
+  }
+
+  return `Read back afterwards and ${parts.join(', and ')}. Check this group in Process Manager.`;
 }
 
 // ------------------------------------------------------------- shortcuts

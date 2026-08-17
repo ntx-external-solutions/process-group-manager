@@ -389,6 +389,7 @@ test('a changed name on an id row is a rename, not a second group', () => {
     {
       uniqueId: ID_A,
       fromDisplay: 'Crestan | Finance',
+      fromParentUniqueId: top.uniqueId,
       from: 'Finance',
       to: 'Finance & Legal',
       line: 2,

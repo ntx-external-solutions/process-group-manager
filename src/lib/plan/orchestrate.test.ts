@@ -55,6 +55,12 @@ function gateway(
     async groupViewers() {
       return [];
     },
+    async usersDirectory() {
+      return [];
+    },
+    async groupChampions() {
+      return { primary: null, regional: [], regionalEnabled: false };
+    },
   };
   return { impl, fetched };
 }
@@ -208,6 +214,12 @@ test('re-planning applies a different publish choice without reading again', asy
     async groupViewers() {
       return [];
     },
+    async usersDirectory() {
+      return [];
+    },
+    async groupChampions() {
+      return { primary: null, regional: [], regionalEnabled: false };
+    },
   };
 
   const rows = parseShortcutCsv(
@@ -237,6 +249,12 @@ test('rows naming no group are never fetched', async () => {
     },
     async groupViewers() {
       return [];
+    },
+    async usersDirectory() {
+      return [];
+    },
+    async groupChampions() {
+      return { primary: null, regional: [], regionalEnabled: false };
     },
   };
 

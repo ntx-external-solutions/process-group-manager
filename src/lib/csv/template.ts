@@ -6,7 +6,7 @@
  * That is what makes replace semantics safe for a partially-edited spreadsheet.
  */
 
-import { GROUP_ID_HEADER } from './layout.ts';
+import { CHAMPION_HEADER, GROUP_ID_HEADER, REGIONAL_CHAMPION_HEADER } from './layout.ts';
 import { toCsv } from './parse.ts';
 
 export { GROUP_ID_HEADER } from './layout.ts';
@@ -17,9 +17,20 @@ export { GROUP_ID_HEADER } from './layout.ts';
  */
 const MIN_GROUP_LEVELS = 3;
 
+/**
+ * The champion columns are optional on upload and always present on a generated file.
+ *
+ * Blank means "leave this group's champions alone", so emitting them empty costs the
+ * operator nothing and saves them having to know the column names exist.
+ */
 export function groupHeader(levels = MIN_GROUP_LEVELS): string[] {
   const width = Math.max(MIN_GROUP_LEVELS, levels);
-  return [GROUP_ID_HEADER, ...Array.from({ length: width }, (_, i) => `Level ${i + 1}`)];
+  return [
+    GROUP_ID_HEADER,
+    ...Array.from({ length: width }, (_, i) => `Level ${i + 1}`),
+    CHAMPION_HEADER,
+    REGIONAL_CHAMPION_HEADER,
+  ];
 }
 
 /**
@@ -71,12 +82,24 @@ export function shortcutWorksheetHeader(): string[] {
  */
 export function groupTemplate(): string {
   const header = groupHeader();
+  const levels = header.length - 3;
+  /** Put a value in a champion column, whatever the level width is. */
+  const row = (path: readonly string[], champion = '', regional = ''): string[] => [
+    ...pad(['', ...path], levels + 1),
+    champion,
+    regional,
+  ];
+
   return toCsv([
     header,
-    pad(['', 'Top Group'], header.length),
-    pad(['', 'Top Group', 'Secondary Group'], header.length),
-    pad(['', 'Top Group', 'Secondary Group', 'Lower Level Group 1'], header.length),
-    pad(['', 'Top Group', 'Secondary Group', 'Lower Level Group 2'], header.length),
+    row(['Top Group'], 'someone@example.com'),
+    row(['Top Group', 'Secondary Group']),
+    row(
+      ['Top Group', 'Secondary Group', 'Lower Level Group 1'],
+      'someone@example.com',
+      'AET: someone.else@example.com; EMEA: third.person@example.com',
+    ),
+    row(['Top Group', 'Secondary Group', 'Lower Level Group 2']),
   ]);
 }
 

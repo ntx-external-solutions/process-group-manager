@@ -17,22 +17,25 @@ import { useEffect, useRef, useState } from 'react';
 
 import { classifyCsv } from '@/lib/csv/detect.ts';
 import { parseGroupCsv, type CsvIssue } from '@/lib/csv/groups.ts';
+import { hasChampionColumns } from '@/lib/csv/layout.ts';
 import { Journal, loadJournal, sessionJournalStore } from '@/lib/exec/journal.ts';
 import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/lib/exec/report.ts';
 import { runPlan, type Outcome, type RunProgress, type RunSummary } from '@/lib/exec/runner.ts';
+import type { ChampionPlan } from '@/lib/plan/championPlan.ts';
 import type { GroupPlan } from '@/lib/plan/groupPlan.ts';
 import { findOrphanGroups, type OrphanGroup } from '@/lib/plan/orphans.ts';
+import { revalidateGroupPlan, type StaleFinding } from '@/lib/plan/revalidate.ts';
 import type { PublishChoice, ShortcutPlan } from '@/lib/plan/shortcutPlan.ts';
 import { parseProcessListCsv, toShortcutCsv } from '@/lib/csv/processList.ts';
 import { parseShortcutCsv } from '@/lib/csv/shortcuts.ts';
 import { groupTemplate, groupExport, shortcutTemplate } from '@/lib/csv/template.ts';
 import { allGroups } from '@/lib/plan/tree.ts';
 import {
+  buildChampionPlan,
   buildGroupPlan,
   buildShortcutPlan,
   describeMoveVisibility,
   indexGroupsById,
-  loadWholeTree,
   type ShortcutPlanResult,
 } from '@/lib/plan/orchestrate.ts';
 import type { VisibilityReport } from '@/lib/plan/visibility.ts';
@@ -46,25 +49,31 @@ import {
   type SessionInfo,
 } from '@/lib/ui/gateway.ts';
 import {
+  buildChampionPreview,
   buildGroupPreview,
   buildShortcutPreview,
+  championPreviewToCsv,
   groupPreviewToCsv,
   requiresClearConfirmation,
   shortcutPreviewToCsv,
+  type ChampionPreview,
   type GroupPreview,
   type ShortcutPreview,
 } from '@/lib/ui/preview.ts';
+import { cachedTreeAt, describeAge, invalidateTree, wholeTree } from '@/lib/ui/treeCache.ts';
 import {
   buildStructurePreview,
   structureToText,
   type StructurePreview,
 } from '@/lib/ui/structure.ts';
 import {
+  ChampionPreviewView,
   GroupPreviewView,
   IssueList,
   plural,
   PublishChoiceView,
   RunResultView,
+  ScimKeyPrompt,
   ShortcutPreviewView,
 } from './parts.tsx';
 
@@ -91,7 +100,17 @@ export default function PlanPage() {
   const [groupPreview, setGroupPreview] = useState<GroupPreview | null>(null);
   const [structure, setStructure] = useState<StructurePreview | null>(null);
   const [shortcutPreview, setShortcutPreview] = useState<ShortcutPreview | null>(null);
+  const [championPreview, setChampionPreview] = useState<ChampionPreview | null>(null);
   const [clearsAcknowledged, setClearsAcknowledged] = useState(false);
+
+  // The SCIM key lives here and nowhere else: not in the session cookie, not in
+  // sessionStorage. A file that needs one is parked until it is given.
+  const [scimKey, setScimKey] = useState<string | null>(null);
+  const [awaitingKey, setAwaitingKey] = useState<string | null>(null);
+
+  // When the held tree was read, and what re-checking it just before Apply turned up.
+  const [treeReadAt, setTreeReadAt] = useState<number | null>(null);
+  const [stale, setStale] = useState<StaleFinding[]>([]);
 
   // Whether this run publishes anything. Re-planning is free once the reads are done,
   // so the choice re-derives the plan rather than being handed to the runner: the
@@ -104,6 +123,7 @@ export default function PlanPage() {
   const [orphans, setOrphans] = useState<OrphanGroup[]>([]);
   const [visibility, setVisibility] = useState<VisibilityReport | null>(null);
   const [groupPlan, setGroupPlan] = useState<GroupPlan | null>(null);
+  const [championPlan, setChampionPlan] = useState<ChampionPlan | null>(null);
   const [shortcutPlan, setShortcutPlan] = useState<ShortcutPlan | null>(null);
 
   const [running, setRunning] = useState(false);
@@ -154,13 +174,17 @@ export default function PlanPage() {
     setOrphans([]);
     setVisibility(null);
     setShortcutPreview(null);
+    setChampionPreview(null);
     setGroupPlan(null);
+    setChampionPlan(null);
     setShortcutPlan(null);
     setClearsAcknowledged(false);
     setPublish('save-only');
     replanRef.current = null;
     setRunSummary(null);
     setProgress(null);
+    setAwaitingKey(null);
+    setStale([]);
   }
 
   function chooseTask(next: Task) {
@@ -181,13 +205,40 @@ export default function PlanPage() {
 
   // ------------------------------------------------------------ downloads
 
+  /**
+   * The whole tree, from the few-minute cache when it is warm.
+   *
+   * Every caller here is building something to *look* at. Writing is a separate
+   * question, answered against the tenant at Apply time — see `apply`.
+   */
+  async function readWholeTree(label: string, force = false) {
+    if (!session) throw new Error('Not signed in.');
+    const tree = await wholeTree(browserGateway(), session.tenant, {
+      force,
+      onProgress: (event) => setBusy(`${label} ${event.done} groups`),
+    });
+    setTreeReadAt(cachedTreeAt(session.tenant));
+    return tree;
+  }
+
+  async function refreshTree() {
+    setBusy('Reading the group tree…');
+    resetResults();
+    try {
+      const tree = await readWholeTree('Reading the group tree…', true);
+      setNote(`Read ${allGroups(tree).length.toLocaleString()} groups. Upload your file again.`);
+    } catch (cause) {
+      handleFailure(cause);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function downloadCurrentStructure() {
     setBusy('Reading the group tree…');
     resetResults();
     try {
-      const tree = await loadWholeTree(browserGateway(), {
-        onProgress: (event) => setBusy(`Reading the group tree… ${event.done} groups`),
-      });
+      const tree = await readWholeTree('Reading the group tree…');
       const groups = allGroups(tree);
       downloadCsv(datedFilename('group-hierarchy'), groupExport(groups));
       setNote(
@@ -270,17 +321,59 @@ export default function PlanPage() {
     }
   }
 
-  async function planGroups(text: string) {
+  async function planGroups(text: string, key: string | null = scimKey) {
     const parsed = parseGroupCsv(text);
     setIssues({ errors: parsed.errors, warnings: parsed.warnings });
     if (parsed.errors.length > 0) return;
 
+    // Champions are named by logon and assigned by user id, and only SCIM bridges the
+    // two. Park the file rather than planning half of it: a preview that silently
+    // omitted the champion columns would be approved as though it covered them.
+    const wantsChampions = hasChampionColumns(parsed.layout);
+    if (wantsChampions && key === null) {
+      setAwaitingKey(text);
+      return;
+    }
+    setAwaitingKey(null);
+
     setBusy('Checking which groups already exist…');
-    const { plan, tree } = await buildGroupPlan(browserGateway(), parsed.rows, (event) =>
-      setBusy(`Checking which groups already exist… ${event.done} levels`),
+    const gateway = browserGateway();
+
+    // A file carrying ids needs the whole tree either way, so read it through the cache
+    // rather than beside it — that is what makes fixing a typo and re-uploading cheap.
+    // A file with no ids resolves a handful of levels on demand, which is cheaper than
+    // reading the tenant to fill a cache, so it only borrows one that is already warm.
+    const needsWholeTree =
+      parsed.rows.some((row) => row.uniqueId !== null) ||
+      (session !== null && cachedTreeAt(session.tenant) !== null);
+    const cached = needsWholeTree ? await readWholeTree('Reading the group tree…') : undefined;
+
+    const { plan, tree } = await buildGroupPlan(
+      gateway,
+      parsed.rows,
+      (event) => setBusy(`Checking which groups already exist… ${event.done} levels`),
+      { wholeTree: cached },
     );
     setGroupPreview(buildGroupPreview(plan));
     setGroupPlan(plan);
+
+    if (wantsChampions && key !== null) {
+      setBusy('Reading the users and the current champions…');
+      const champions = await buildChampionPlan(gateway, parsed.rows, plan, {
+        scimApiKey: key,
+        probeGroupUniqueId: tree.roots[0]?.uniqueId ?? null,
+        onProgress: (event) =>
+          setBusy(`Reading the current champions… ${event.done} of ${event.total ?? '?'}`),
+      });
+      setChampionPreview(buildChampionPreview(champions.plan));
+      setChampionPlan(champions.plan);
+      setUnreadable(
+        champions.unreadable.map((f) => ({
+          line: 0,
+          message: `Could not read the current champions of group ${f.uniqueId}: ${f.message}. Its champion is still set, but the plan cannot show who it replaces.`,
+        })),
+      );
+    }
 
     if (plan.moves.length > 0) {
       // Permissions are inherited down the tree, so a move changes who can see
@@ -308,9 +401,7 @@ export default function PlanPage() {
     // The whole tree is read once and turned into a lookup table, which also gives every
     // group a full path to show in the preview.
     setBusy('Reading the group tree…');
-    const tree = await loadWholeTree(gateway, {
-      onProgress: (event) => setBusy(`Reading the group tree… ${event.done} groups`),
-    });
+    const tree = await readWholeTree('Reading the group tree…');
     const groups = indexGroupsById(tree);
 
     setBusy('Reading the processes…');
@@ -368,6 +459,12 @@ export default function PlanPage() {
   async function apply() {
     if (!session || running) return;
 
+    setRunning(true);
+    setError(null);
+    setRunSummary(null);
+    setProgress(null);
+    setStale([]);
+
     // Continue an unfinished run rather than starting a fresh journal: steps that
     // already completed must not be attempted twice.
     const journal =
@@ -377,16 +474,33 @@ export default function PlanPage() {
     const controller = new AbortController();
     abortRef.current = controller;
 
-    setRunning(true);
-    setError(null);
-    setRunSummary(null);
-    setProgress(null);
-
     try {
+      // The tree the plan was built from may be minutes old, and the executor has no
+      // existence check of its own — a group somebody else added since would be created
+      // a second time. This reads only the levels the plan touches.
+      if (groupPlan) {
+        setProgress({
+          phase: 'groups',
+          done: 0,
+          total: 1,
+          label: 'Checking nothing has changed since the preview…',
+        });
+        const findings = await revalidateGroupPlan(browserGateway(), groupPlan);
+        if (findings.length > 0) {
+          // The tenant has moved on, so the next upload must not plan from the copy that
+          // described the old one.
+          invalidateTree();
+          setTreeReadAt(null);
+          setStale(findings);
+          setProgress(null);
+          return;
+        }
+      }
+
       const summary = await runPlan(
         browserExecGateway(),
         journal,
-        { groupPlan, shortcutPlan },
+        { groupPlan, championPlan, shortcutPlan },
         { onProgress: setProgress, signal: controller.signal },
       );
 
@@ -401,6 +515,9 @@ export default function PlanPage() {
       setUnfinished(journal);
       handleFailure(cause);
     } finally {
+      // Whatever happened, the held tree no longer describes the tenant.
+      invalidateTree();
+      setTreeReadAt(null);
       setRunning(false);
       abortRef.current = null;
     }
@@ -409,7 +526,7 @@ export default function PlanPage() {
   function downloadReport() {
     downloadCsv(
       datedFilename(groupPlan ? 'group-run-report' : 'shortcut-run-report'),
-      reportToCsv({ outcomes: runSummary?.outcomes ?? [], groupPlan, shortcutPlan }),
+      reportToCsv({ outcomes: runSummary?.outcomes ?? [], groupPlan, championPlan, shortcutPlan }),
     );
   }
 
@@ -442,9 +559,12 @@ export default function PlanPage() {
 
   const preview = groupPreview ?? shortcutPreview;
   const needsClearAck = shortcutPreview !== null && requiresClearConfirmation(shortcutPreview);
+  // A file whose groups all exist can still be worth applying — that is exactly what a
+  // file that only sets champions looks like.
+  const isNoOp = (preview?.isNoOp ?? true) && (championPreview?.isNoOp ?? true);
   const canApply =
     preview !== null &&
-    !preview.isNoOp &&
+    !isNoOp &&
     !running &&
     runSummary === null &&
     (!needsClearAck || clearsAcknowledged);
@@ -535,6 +655,17 @@ export default function PlanPage() {
               Nothing is ever deleted. A group missing from your file is left alone.
               Deleting a row does not delete a group.
             </li>
+            <li>
+              Add a <code>Champion</code> column to set a group&rsquo;s champion by logon,
+              and a <code>Regional Champions</code> column for{' '}
+              <code>Region: logon</code> pairs separated by <code>;</code>. Both work on
+              groups you are adding and on ones that already exist.
+            </li>
+            <li>
+              A blank champion cell leaves that group&rsquo;s champions alone. Write{' '}
+              <code>CLEAR</code> to remove them. Being a champion grants the right to
+              restructure the group, so the preview lists every change.
+            </li>
           </ul>
           <div className="row">
             <button
@@ -608,6 +739,22 @@ export default function PlanPage() {
         </div>
       )}
 
+      {treeReadAt !== null && (
+        <p className="crumb">
+          Your group structure was read {describeAge(treeReadAt)} and is being reused.{' '}
+          <button
+            type="button"
+            className="link"
+            onClick={() => void refreshTree()}
+            disabled={working || running}
+          >
+            Read it again
+          </button>
+          {' '}if somebody else has been changing groups. It is re-checked before anything
+          is written either way.
+        </p>
+      )}
+
       {task !== null && (
         <div className="panel">
           <h2>3. Upload your file</h2>
@@ -642,6 +789,39 @@ export default function PlanPage() {
         </div>
       )}
 
+      {awaitingKey !== null && (
+        <ScimKeyPrompt
+          fileName={fileName}
+          busy={working}
+          onSubmit={(key) => {
+            setScimKey(key);
+            setBusy('Reading the file…');
+            void planGroups(awaitingKey, key)
+              .catch(handleFailure)
+              .finally(() => setBusy(null));
+          }}
+        />
+      )}
+
+      {stale.length > 0 && (
+        <div className="panel error">
+          <h2>Your tenant changed while this was on screen</h2>
+          <p>
+            Nothing was written. The preview above describes a structure that no longer
+            matches Process Manager, so applying it could duplicate a group rather than
+            create one. Upload the same file again to plan against what is there now.
+          </p>
+          <ul className="issues">
+            {stale.map((finding, i) => (
+              <li key={`${finding.line}-${i}`}>
+                {finding.line !== null && <span className="line">Row {finding.line}</span>}
+                {finding.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {issues !== null && (
         <>
           <IssueList title="Errors in the file" issues={issues.errors} tone="error" />
@@ -660,6 +840,13 @@ export default function PlanPage() {
             orphans={orphans}
             visibility={visibility}
           />
+        </>
+      )}
+
+      {championPreview !== null && (
+        <>
+          <h2 className="section">Champions</h2>
+          <ChampionPreviewView preview={championPreview} />
         </>
       )}
 
@@ -698,6 +885,17 @@ export default function PlanPage() {
             >
               Download this plan
             </button>
+            {championPreview !== null && !championPreview.isNoOp && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() =>
+                  downloadCsv(datedFilename('champion-plan'), championPreviewToCsv(championPreview))
+                }
+              >
+                Download the champion changes
+              </button>
+            )}
             {structure !== null && (
               <button
                 type="button"
@@ -728,7 +926,7 @@ export default function PlanPage() {
             </label>
           )}
 
-          {preview.isNoOp ? (
+          {isNoOp ? (
             <p className="pending">
               Nothing to apply. This file matches what your tenant already has.
             </p>
@@ -760,8 +958,12 @@ export default function PlanPage() {
       {progress !== null && runSummary === null && (
         <div className="panel">
           <h2>
-            {progress.phase === 'groups' ? 'Creating groups' : 'Updating processes'}:{' '}
-            {progress.done.toLocaleString()} of {progress.total.toLocaleString()}
+            {progress.phase === 'groups'
+              ? 'Creating groups'
+              : progress.phase === 'champions'
+                ? 'Setting champions'
+                : 'Updating processes'}
+            : {progress.done.toLocaleString()} of {progress.total.toLocaleString()}
           </h2>
           <progress value={progress.done} max={Math.max(progress.total, 1)} />
           <p>{progress.label}</p>
@@ -773,8 +975,13 @@ export default function PlanPage() {
           <h2 className="section">What happened</h2>
           <RunResultView
             summary={runSummary}
-            counts={summarise({ outcomes: runSummary.outcomes, groupPlan, shortcutPlan })}
-            attention={needsAttention({ outcomes: runSummary.outcomes, groupPlan, shortcutPlan })}
+            counts={summarise({ outcomes: runSummary.outcomes, groupPlan, championPlan, shortcutPlan })}
+            attention={needsAttention({
+              outcomes: runSummary.outcomes,
+              groupPlan,
+              championPlan,
+              shortcutPlan,
+            })}
             onDownload={downloadReport}
             onStartAgain={() => {
               resetResults();

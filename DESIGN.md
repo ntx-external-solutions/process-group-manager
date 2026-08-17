@@ -115,6 +115,26 @@ identifiers per group.
 `ValidateGroupAction` returns `{isValid, isCancelled, isPrompt, title, message,
 continueLabel, cancelLabel, errorCode}` — a server-driven confirmation gate. See R6.
 
+### How long a read of the tree may be trusted
+
+There is no "give me everything" call, so a full read is one request per group — about 92
+on the measured tenant, unbounded on a larger one. The plan screen wants it up to three
+times in a row, so it is **cached for five minutes** per tenant (`ui/treeCache.ts`), with
+the age shown on screen next to a Refresh control.
+
+It is not held for the length of a session, and the difference matters: the tree is the
+baseline every plan is diffed against, and `runCreates` has **no existence check of its
+own** — a group somebody else added since the read is invisible, so the file creates a
+second one rather than failing. Three rules bound that:
+
+1. the cache expires, and its age is visible;
+2. it is invalidated after every run, so a run's own effects cannot be missing from the
+   next plan;
+3. **planning from a cached tree does not authorise writing from one.** The levels the
+   plan touches are re-read immediately before Apply (`plan/revalidate.ts`) — one request
+   per distinct parent, bounded by the plan rather than the tenant — and a plan that no
+   longer matches is refused rather than repaired.
+
 ### Moving & reordering — one endpoint for everything
 
 `POST /Process/Edit/ReorderTreeNodes` → `{"success":true,"errors":[]}`
@@ -194,6 +214,58 @@ it is exactly what R5 needs.
 
 ⚠️ Response quirk: `GetUserActionPermissionsByProcesses` returns its rows keyed
 `groupUniqueId` even though the value is a **process** UUID. Code around it.
+
+### Group champions
+
+```http
+GET    /Process/Edit/GetProcessGroupPrimaryChampion?processGroupUniqueId=<uuid>
+       → {champion: {UserId, FirstName, LastName, …}|null, enableGroupRegionalChampions: bool}
+GET    /Process/Edit/GetProcessGroupRegionalChampions?processGroupUniqueId=<uuid>
+       → {champions: [{User: {UserId, …}, Region: "AET"}]}
+POST   /Process/Edit/AssignProcessGroupPrimaryChampion   {processGroupUniqueId, championId}
+DELETE /Process/Edit/RemoveProcessGroupPrimaryChampion   {processGroupUniqueId}
+POST   /Process/Edit/AssignProcessGroupRegionalChampions
+       {processGroupUniqueId, regionalChampions: [{userId, region}]}
+```
+
+Same MVC surface and same bearer auth as group create/rename; the antiforgery header in
+a browser capture is a session artefact, not a requirement.
+
+Three things to know before using them:
+
+1. **A champion is a permission grant.** `isChampion` feeds `canManageGroups` above, so
+   setting one confers the right to restructure that branch and everything under it.
+2. **`enableGroupRegionalChampions` is a tenant setting**, and it rides on the *primary*
+   champion response — there is no separate call to ask.
+3. **The regional assign takes the whole array**, the way the admin screen sends it, so
+   it is taken to replace rather than merge. That is an assumption about a write, so the
+   runner reads the list back afterwards and reports any difference (`verifyRegional`).
+   Anyone still holding it who was not in the file shows up in the run report.
+
+There is **no batch form** for any of these: reading current champions is one, or two,
+requests per group, which is why only groups the file actually names are read.
+
+### Turning a logon into a `championId` — SCIM
+
+The champion endpoints take a numeric user id, and nothing on the tenant origin maps a
+logon to one. The SCIM API does:
+
+```http
+GET https://api.promapp.com/api/scim/users?startIndex=1&count=200
+    Authorization: Bearer <SCIM API key>
+    → {Resources: [{id: "1084", userName: "…", name: {…}, active: bool}], totalResults}
+```
+
+Different host, different credential, different failure meaning — a 401 here means "wrong
+key", not "dead session", so it must not reach the sign-out path (hence `ScimError`).
+
+**One host serves every tenant.** `api.promapp.com` does not follow the tenant's own
+origin or its regional suffix, so it is a constant rather than something derived;
+`SCIM_BASE_URL` overrides it if that ever changes.
+
+Matching is on `userName` only, **never on email**. In the demo tenant one address is
+shared by fourteen accounts and another by three: an email identifies a person, but it is
+the *account* that receives the permission.
 
 ### Shortcuts live at `ProcessGroupItems`
 

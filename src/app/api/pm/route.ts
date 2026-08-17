@@ -20,6 +20,7 @@ import { SESSION_COOKIE, unseal } from '@/lib/auth/session.ts';
 import type { PmContext } from '@/lib/pm/client.ts';
 import { isPmError } from '@/lib/pm/client.ts';
 import { execute, parseOperation } from '@/lib/pm/operations.ts';
+import { isScimError } from '@/lib/pm/scim.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,6 +61,13 @@ export async function POST(request: Request): Promise<NextResponse> {
     const result = await execute(ctx, parsed.operation);
     return NextResponse.json({ ok: true, result });
   } catch (error) {
+    // Checked before the Process Manager branch below: a SCIM key the directory refuses
+    // is a wrong key, not a dead session, and signing the operator out over one would
+    // lose the plan they were part-way through building.
+    if (isScimError(error)) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
     if (isPmError(error)) {
       // A 401 from Process Manager means our token died mid-run; tell the client to
       // stop and re-authenticate rather than hammering through the rest of a plan.

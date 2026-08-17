@@ -20,6 +20,8 @@ export type ActionKind =
   | 'group.create'
   | 'group.rename'
   | 'group.move'
+  | 'group.champion'
+  | 'group.regionalChampions'
   | 'shortcuts.write'
   | 'process.publish';
 
@@ -227,6 +229,13 @@ export const step = {
    */
   groupRenameById: (uniqueId: string): string => `group.rename.id:${uniqueId}`,
   groupMove: (uniqueId: string): string => `group.move:${uniqueId}`,
+  /**
+   * Keyed by path rather than by id, because a champion can be set on a group this same
+   * run is creating — which has no id until it exists, and would therefore have no
+   * stable identity to resume against.
+   */
+  championPrimary: (pathKey: string): string => `group.champion:${pathKey}`,
+  championRegional: (pathKey: string): string => `group.champion.regional:${pathKey}`,
   shortcuts: (processUniqueId: string): string => `shortcuts:${processUniqueId}`,
   publish: (processUniqueId: string): string => `publish:${processUniqueId}`,
 };
