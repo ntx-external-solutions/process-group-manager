@@ -188,10 +188,10 @@ export async function execute(ctx: PmContext, operation: Operation): Promise<unk
       return assignRegionalChampions(ctx, operation.groupUniqueId, operation.champions);
 
     case 'users.directory':
-      // The destination is derived from the session's own baseUrl, never from the
-      // request — the same rule that keeps the rest of this proxy from being a relay.
+      // The destination is fixed, never caller-supplied — the same rule that keeps the
+      // rest of this proxy from being a relay. Only the key comes from the request.
       return listDirectoryUsers({
-        baseUrl: scimBaseUrl(ctx.baseUrl, process.env['SCIM_BASE_URL']),
+        baseUrl: scimBaseUrl(process.env['SCIM_BASE_URL']),
         apiKey: operation.scimApiKey,
         fetch: ctx.fetch,
       });

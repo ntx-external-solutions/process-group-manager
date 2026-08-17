@@ -47,21 +47,16 @@ export function isScimError(error: unknown): error is ScimError {
 }
 
 /**
- * Where SCIM lives for a given tenant origin.
+ * Where SCIM lives.
  *
- * `demo.promapp.com` → `api.promapp.com`, and `x.promapp.com.au` → `api.promapp.com.au`,
- * by replacing the leading label. Regional deployments differ only in that suffix, so
- * deriving beats hard-coding one host — but SCIM_BASE_URL overrides it for anything this
- * rule does not cover rather than leaving a customer stuck.
+ * One host for every tenant, whatever origin the tenant itself is served from — it does
+ * not follow the tenant's regional suffix. SCIM_BASE_URL overrides it rather than leaving
+ * a customer stuck if that ever stops being true.
  */
-export function scimBaseUrl(tenantBaseUrl: string, override?: string | undefined): string {
-  if (override) return override.replace(/\/+$/, '');
+export const DEFAULT_SCIM_BASE_URL = 'https://api.promapp.com';
 
-  const host = new URL(tenantBaseUrl).hostname;
-  const labels = host.split('.');
-  // A bare `promapp.com` has nothing to replace; anything longer loses its first label.
-  const suffix = labels.length > 2 ? labels.slice(1).join('.') : host;
-  return `https://api.${suffix}`;
+export function scimBaseUrl(override?: string | undefined): string {
+  return (override ?? DEFAULT_SCIM_BASE_URL).replace(/\/+$/, '');
 }
 
 interface ScimName {

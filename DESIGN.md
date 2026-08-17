@@ -259,6 +259,10 @@ GET https://api.promapp.com/api/scim/users?startIndex=1&count=200
 Different host, different credential, different failure meaning — a 401 here means "wrong
 key", not "dead session", so it must not reach the sign-out path (hence `ScimError`).
 
+**One host serves every tenant.** `api.promapp.com` does not follow the tenant's own
+origin or its regional suffix, so it is a constant rather than something derived;
+`SCIM_BASE_URL` overrides it if that ever changes.
+
 Matching is on `userName` only, **never on email**. In the demo tenant one address is
 shared by fourteen accounts and another by three: an email identifies a person, but it is
 the *account* that receives the permission.

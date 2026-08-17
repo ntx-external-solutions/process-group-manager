@@ -3,11 +3,9 @@ import { test } from 'node:test';
 
 import { indexUsersByLogon, isScimError, listDirectoryUsers, scimBaseUrl } from './scim.ts';
 
-test('SCIM lives on the api host of the same suffix', () => {
-  assert.equal(scimBaseUrl('https://demo.promapp.com'), 'https://api.promapp.com');
-  // Regional deployments differ only in the suffix, which is why this is derived.
-  assert.equal(scimBaseUrl('https://acme.promapp.com.au'), 'https://api.promapp.com.au');
-  assert.equal(scimBaseUrl('https://demo.promapp.com', 'https://scim.test/'), 'https://scim.test');
+test('SCIM is one host for every tenant, whatever origin the tenant is served from', () => {
+  assert.equal(scimBaseUrl(), 'https://api.promapp.com');
+  assert.equal(scimBaseUrl('https://scim.test/'), 'https://scim.test');
 });
 
 function page(users: Array<{ id: string; userName: string }>, totalResults: number) {
