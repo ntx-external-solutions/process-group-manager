@@ -15,7 +15,13 @@ import { ACTION_RECOVERED, type Outcome, type RunSummary } from '@/lib/exec/runn
 import type { OrphanGroup } from '@/lib/plan/orphans.ts';
 import type { PublishChoice } from '@/lib/plan/shortcutPlan.ts';
 import { audienceChanges, type VisibilityReport } from '@/lib/plan/visibility.ts';
-import type { GroupPreview, ShortcutPreview, ShortcutPreviewRow } from '@/lib/ui/preview.ts';
+import type {
+  ChampionPreview,
+  ChampionPreviewRow,
+  GroupPreview,
+  ShortcutPreview,
+  ShortcutPreviewRow,
+} from '@/lib/ui/preview.ts';
 import type { StructureNode, StructurePreview } from '@/lib/ui/structure.ts';
 
 /** Rows rendered on screen before deferring to the downloadable CSV. */
@@ -187,6 +193,210 @@ function VisibilityView({ report }: { report: VisibilityReport }) {
 function describeAudience(count: { users: number; roles: number } | null): string {
   if (count === null) return 'not known';
   return `${plural(count.users, 'user')}, ${plural(count.roles, 'role')}`;
+}
+
+/**
+ * Ask for the SCIM API key.
+ *
+ * Only shown when an uploaded file actually names champions, because that is the only
+ * thing the key is for. It is held in this tab for as long as the tab is open and put
+ * nowhere else — not in the session cookie, not in browser storage, not on our server —
+ * which is also why closing the tab means typing it again.
+ */
+export function ScimKeyPrompt({
+  fileName,
+  onSubmit,
+  busy,
+}: {
+  fileName: string | null;
+  onSubmit: (key: string) => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="panel warning">
+      <h2>This file sets champions</h2>
+      <p>
+        {fileName === null ? 'Your file' : `"${fileName}"`} names champions by logon, and
+        Process Manager assigns them by user id. Paste a SCIM API key so the logons can be
+        looked up.
+      </p>
+      <ul className="checklist">
+        <li>
+          Create one in Process Manager under Admin, then API keys. It only needs to read
+          users.
+        </li>
+        <li>
+          The key is used for this tab and never stored — not in your session, not on our
+          server. Close the tab and it is gone.
+        </li>
+        <li>Remove the champion columns from your file if you would rather not use one.</li>
+      </ul>
+      <form
+        className="row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const field = new FormData(event.currentTarget).get('scimApiKey');
+          const key = typeof field === 'string' ? field.trim() : '';
+          if (key !== '') onSubmit(key);
+        }}
+      >
+        <input
+          type="password"
+          name="scimApiKey"
+          placeholder="SCIM API key"
+          autoComplete="off"
+          disabled={busy}
+          size={48}
+        />
+        <button type="submit" disabled={busy}>
+          Look up the champions
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function ChampionTable({
+  rows,
+  nowLabel,
+  afterLabel,
+}: {
+  rows: readonly ChampionPreviewRow[];
+  nowLabel: string;
+  afterLabel: string;
+}) {
+  return (
+    <>
+      <table>
+        <thead>
+          <tr>
+            <th>Group</th>
+            <th>{nowLabel}</th>
+            <th>{afterLabel}</th>
+            <th>Row</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.slice(0, MAX_ROWS).map((row) => (
+            <tr key={`${row.line}-${row.display}`}>
+              <td>
+                {row.display}
+                {row.isNew && <span className="muted"> (new)</span>}
+              </td>
+              <td className="muted">
+                {row.isNew ? '—' : (row.before ?? 'nobody')}
+              </td>
+              <td>{row.after}</td>
+              <td className="muted">{row.line}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <Truncated shown={MAX_ROWS} total={rows.length} />
+    </>
+  );
+}
+
+export function ChampionPreviewView({ preview }: { preview: ChampionPreview }) {
+  return (
+    <>
+      <Counts
+        items={[
+          { label: 'champions to set', value: preview.primary.length, loud: true },
+          {
+            label: 'regional lists to replace',
+            value: preview.regional.length,
+            loud: preview.regional.length > 0,
+          },
+          { label: 'already correct', value: preview.unchanged },
+          { label: 'blocked', value: preview.blocked.length },
+        ]}
+      />
+
+      {preview.isNoOp && (
+        <div className="panel">
+          <h2>Champions are already as the file describes them</h2>
+          <p>
+            Nothing to change here. That is what re-uploading a file you have already
+            applied should look like.
+          </p>
+        </div>
+      )}
+
+      {!preview.isNoOp && (
+        <div className="panel warning">
+          <h2>A champion can restructure the group</h2>
+          <ul className="checklist">
+            <li>
+              Being a champion of a group grants the same rights over it that a Promaster
+              has: creating, renaming, and moving groups inside it.
+            </li>
+            <li>
+              It applies down the tree, so a champion of a top-level group holds those
+              rights over everything beneath it.
+            </li>
+            {preview.removals > 0 && (
+              <li>
+                {plural(preview.removals, 'group')} would have somebody removed as champion.
+                This tool cannot put them back — it would have to be done in Process Manager.
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {preview.primary.length > 0 && (
+        <div className="panel">
+          <h2>Champions to set ({preview.primary.length})</h2>
+          <ChampionTable rows={preview.primary} nowLabel="Champion now" afterLabel="Champion after" />
+        </div>
+      )}
+
+      {preview.regional.length > 0 && (
+        <div className="panel">
+          <h2>Regional champions to set ({preview.regional.length})</h2>
+          <p>
+            This replaces the whole list for each group. Anybody in the &ldquo;now&rdquo;
+            column who is not in the &ldquo;after&rdquo; column stops being a regional
+            champion of that group.
+          </p>
+          <ChampionTable rows={preview.regional} nowLabel="Now" afterLabel="After" />
+        </div>
+      )}
+
+      {preview.warnings.length > 0 && (
+        <div className="panel warning">
+          <h2>Worth a look ({preview.warnings.length})</h2>
+          <ul className="issues">
+            {preview.warnings.slice(0, MAX_ROWS).map((issue, i) => (
+              <li key={`${issue.line}-${i}`}>
+                <span className="line">Row {issue.line}</span>
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {preview.blocked.length > 0 && (
+        <div className="panel error">
+          <h2>Champions that cannot be set ({preview.blocked.length})</h2>
+          <p>
+            The rest of the file still applies. These rows have their groups created,
+            renamed, or moved as normal — only the champion is left alone.
+          </p>
+          <ul className="issues">
+            {preview.blocked.slice(0, MAX_ROWS).map((issue, i) => (
+              <li key={`${issue.line}-${i}`}>
+                <span className="line">Row {issue.line}</span>
+                {issue.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
 }
 
 export function GroupPreviewView({

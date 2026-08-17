@@ -15,6 +15,14 @@
 
 import type { PmContext } from './client.ts';
 import {
+  assignPrimaryChampion,
+  assignRegionalChampions,
+  getGroupChampions,
+  removePrimaryChampion,
+  type RegionalChampionAssignment,
+} from './champions.ts';
+import { listDirectoryUsers, scimBaseUrl } from './scim.ts';
+import {
   createGroup,
   getChildGroups,
   getGroupPermissions,
@@ -55,6 +63,22 @@ export type Operation =
     }
   | { op: 'groups.permissions'; groupIds: number[] }
   | { op: 'groups.viewers'; groupIds: number[] }
+  /** Primary and regional champions of one group, read together. */
+  | { op: 'groups.champions'; groupUniqueId: string }
+  /** null removes the primary champion. */
+  | { op: 'groups.champions.setPrimary'; groupUniqueId: string; championId: number | null }
+  /** The complete regional list. An empty array removes them all. */
+  | {
+      op: 'groups.champions.setRegional';
+      groupUniqueId: string;
+      champions: RegionalChampionAssignment[];
+    }
+  /**
+   * The tenant's users, over SCIM. The key is supplied per call and never stored — not
+   * in the session cookie, not on this server, which is why it is an operation field
+   * rather than something the proxy holds.
+   */
+  | { op: 'users.directory'; scimApiKey: string }
   | { op: 'process.summary'; processUniqueId: string }
   | {
       op: 'process.setShortcuts';
@@ -79,6 +103,10 @@ export const OPERATION_NAMES: readonly OperationName[] = [
   'groups.move',
   'groups.permissions',
   'groups.viewers',
+  'groups.champions',
+  'groups.champions.setPrimary',
+  'groups.champions.setRegional',
+  'users.directory',
   'process.summary',
   'process.setShortcuts',
   'process.publish',
@@ -147,6 +175,26 @@ export async function execute(ctx: PmContext, operation: Operation): Promise<unk
 
     case 'groups.viewers':
       return getGroupViewerCounts(ctx, operation.groupIds);
+
+    case 'groups.champions':
+      return getGroupChampions(ctx, operation.groupUniqueId);
+
+    case 'groups.champions.setPrimary':
+      return operation.championId === null
+        ? removePrimaryChampion(ctx, operation.groupUniqueId)
+        : assignPrimaryChampion(ctx, operation.groupUniqueId, operation.championId);
+
+    case 'groups.champions.setRegional':
+      return assignRegionalChampions(ctx, operation.groupUniqueId, operation.champions);
+
+    case 'users.directory':
+      // The destination is derived from the session's own baseUrl, never from the
+      // request — the same rule that keeps the rest of this proxy from being a relay.
+      return listDirectoryUsers({
+        baseUrl: scimBaseUrl(ctx.baseUrl, process.env['SCIM_BASE_URL']),
+        apiKey: operation.scimApiKey,
+        fetch: ctx.fetch,
+      });
 
     case 'process.summary':
       return summarise(ctx, operation.processUniqueId);
@@ -288,6 +336,54 @@ export function parseOperation(input: unknown): ParseResult {
       return { ok: true, operation: { op, groupIds } as Operation };
     }
 
+    case 'groups.champions': {
+      const groupUniqueId = requiredString(body['groupUniqueId']);
+      if (!groupUniqueId) {
+        return { ok: false, error: 'groups.champions: "groupUniqueId" is required.' };
+      }
+      return { ok: true, operation: { op, groupUniqueId } };
+    }
+
+    case 'groups.champions.setPrimary': {
+      const groupUniqueId = requiredString(body['groupUniqueId']);
+      if (!groupUniqueId) {
+        return { ok: false, error: `${op}: "groupUniqueId" is required.` };
+      }
+      const championId = body['championId'];
+      // null is the remove instruction, so it has to be told apart from a missing field
+      // rather than defaulted — defaulting either way silently changes what happens.
+      if (championId !== null && !isUserId(championId)) {
+        return {
+          ok: false,
+          error: `${op}: "championId" must be a positive integer, or null to remove.`,
+        };
+      }
+      return { ok: true, operation: { op, groupUniqueId, championId } };
+    }
+
+    case 'groups.champions.setRegional': {
+      const groupUniqueId = requiredString(body['groupUniqueId']);
+      if (!groupUniqueId) {
+        return { ok: false, error: `${op}: "groupUniqueId" is required.` };
+      }
+      const champions = regionalChampionArray(body['champions']);
+      if (!champions) {
+        return {
+          ok: false,
+          error: `${op}: "champions" must be an array of {userId, region}.`,
+        };
+      }
+      return { ok: true, operation: { op, groupUniqueId, champions } };
+    }
+
+    case 'users.directory': {
+      const scimApiKey = requiredString(body['scimApiKey']);
+      if (!scimApiKey) {
+        return { ok: false, error: 'users.directory: "scimApiKey" is required.' };
+      }
+      return { ok: true, operation: { op, scimApiKey } };
+    }
+
     case 'process.summary': {
       const processUniqueId = requiredString(body['processUniqueId']);
       if (!processUniqueId) {
@@ -371,6 +467,26 @@ function requiredString(value: unknown): string | null {
 function nullableString(value: unknown): string | null | undefined {
   if (value === null || value === undefined) return null;
   return typeof value === 'string' ? value : undefined;
+}
+
+function isUserId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+function regionalChampionArray(value: unknown): RegionalChampionAssignment[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: RegionalChampionAssignment[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) return null;
+    const champion = entry as Record<string, unknown>;
+    const region = champion['region'];
+    if (!isUserId(champion['userId']) || typeof region !== 'string' || region.trim() === '') {
+      return null;
+    }
+    // Rebuilt field by field so nothing else from the request reaches the payload.
+    out.push({ userId: champion['userId'], region });
+  }
+  return out;
 }
 
 function numberArray(value: unknown): number[] | null {

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import type { ChampionPlan } from '../plan/championPlan.ts';
 import type { CreateAction, GroupPlan } from '../plan/groupPlan.ts';
 import type { ResolvedGroup, ShortcutChange, ShortcutPlan } from '../plan/shortcutPlan.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
@@ -36,6 +37,9 @@ interface Overrides {
   publish?: ExecGateway['publish'];
   processSummary?: ExecGateway['processSummary'];
   childGroups?: ExecGateway['childGroups'];
+  setPrimaryChampion?: ExecGateway['setPrimaryChampion'];
+  setRegionalChampions?: ExecGateway['setRegionalChampions'];
+  groupChampions?: ExecGateway['groupChampions'];
 }
 
 let treeItemId = 500;
@@ -135,10 +139,32 @@ function harness(over: Overrides = {}): Harness {
       calls.push({ op: 'childGroups', args: parent });
       return over.childGroups ? over.childGroups(parent) : [];
     },
+    setPrimaryChampion: async (groupUniqueId, championId) => {
+      calls.push({ op: 'setPrimaryChampion', args: `${groupUniqueId}:${championId ?? 'none'}` });
+      return over.setPrimaryChampion
+        ? over.setPrimaryChampion(groupUniqueId, championId)
+        : { success: true };
+    },
+    setRegionalChampions: async (groupUniqueId, champions) => {
+      calls.push({
+        op: 'setRegionalChampions',
+        args: `${groupUniqueId}:${champions.map((c) => `${c.region}/${c.userId}`).join(',')}`,
+      });
+      return over.setRegionalChampions
+        ? over.setRegionalChampions(groupUniqueId, champions)
+        : { success: true };
+    },
+    groupChampions: async (groupUniqueId) => {
+      calls.push({ op: 'groupChampions', args: groupUniqueId });
+      return over.groupChampions
+        ? over.groupChampions(groupUniqueId)
+        : { primary: null, regional: [], regionalEnabled: true };
+    },
   };
 
   const ops = () => calls.map((c) => c.op);
-  return { gateway, calls, ops, writes: () => ops().filter((op) => op !== 'childGroups') };
+  const reads = new Set(['childGroups', 'groupChampions']);
+  return { gateway, calls, ops, writes: () => ops().filter((op) => !reads.has(op)) };
 }
 
 // ------------------------------------------------------------ group plan
@@ -878,6 +904,7 @@ function rename(over: Partial<GroupPlan['renames'][number]> = {}): GroupPlan['re
   return {
     uniqueId: 'g-finance',
     fromDisplay: 'Crestan | Finance',
+    fromParentUniqueId: 'g-crestan',
     from: 'Finance',
     to: 'Finance & Legal',
     line: 2,
@@ -1033,4 +1060,132 @@ test('a rename of an existing group records what it was called before', () => {
     assert.equal(outcome?.before, 'Finance');
     assert.equal(outcome?.after, 'Finance & Legal');
   });
+});
+
+// -------------------------------------------------------------- champions
+
+function championPlan(over: Partial<ChampionPlan> = {}): ChampionPlan {
+  return { primary: [], regional: [], unchanged: 0, blocked: [], warnings: [], ...over };
+}
+
+function primary(over: Partial<ChampionPlan['primary'][number]> = {}): ChampionPlan['primary'][number] {
+  return {
+    key: 'top',
+    target: { kind: 'existing', uniqueId: 'g-top' },
+    display: 'Top',
+    line: 2,
+    person: { userId: 1084, logon: 'bohdan@x.io', displayName: 'Bohdan Pavlenko' },
+    before: null,
+    ...over,
+  };
+}
+
+test('a champion on a group this run creates is set against the id it was given', async () => {
+  // The plan names a sequence number; only the runner knows what it turned into.
+  const h = harness();
+  const summary = await runPlan(h.gateway, journal(), {
+    groupPlan: groupPlan([create()]),
+    championPlan: championPlan({ primary: [primary({ target: { kind: 'planned', seq: 0 } })] }),
+  });
+
+  assert.deepEqual(h.writes(), ['validate', 'create', 'rename', 'setPrimaryChampion']);
+  assert.equal(
+    h.calls.find((c) => c.op === 'setPrimaryChampion')?.args,
+    'new-1:1084',
+  );
+  assert.equal(summary.outcomes.at(-1)?.result, 'ok');
+});
+
+test('a champion for a group that failed to be created is skipped, not applied to nothing', async () => {
+  const h = harness({
+    createGroup: async () => {
+      throw new Error('500');
+    },
+  });
+
+  const summary = await runPlan(h.gateway, journal(), {
+    groupPlan: groupPlan([create()]),
+    championPlan: championPlan({ primary: [primary({ target: { kind: 'planned', seq: 0 } })] }),
+  });
+
+  assert.equal(h.ops().includes('setPrimaryChampion'), false);
+  assert.equal(summary.outcomes.at(-1)?.result, 'skipped');
+});
+
+test('a champion already set by an earlier run in this tab is not set twice', async () => {
+  const j = journal();
+  const first = harness();
+  await runPlan(first.gateway, j, { championPlan: championPlan({ primary: [primary()] }) });
+
+  const second = harness();
+  const summary = await runPlan(second.gateway, j, {
+    championPlan: championPlan({ primary: [primary()] }),
+  });
+
+  assert.deepEqual(second.writes(), []);
+  assert.equal(summary.outcomes[0]?.result, 'skipped');
+});
+
+test('regional champions are read back, and a merge instead of a replace is reported', async () => {
+  // The endpoint is undocumented. If it adds rather than replaces, somebody the file
+  // left out is still a champion — and the report has to say so.
+  const h = harness({
+    groupChampions: async () => ({
+      primary: null,
+      regional: [
+        { userId: 1084, name: 'Bohdan Pavlenko', region: 'AET' },
+        { userId: 27, name: 'Anjelica Farber', region: 'AET' },
+      ],
+      regionalEnabled: true,
+    }),
+  });
+
+  const summary = await runPlan(h.gateway, journal(), {
+    championPlan: championPlan({
+      regional: [
+        {
+          key: 'top',
+          target: { kind: 'existing', uniqueId: 'g-top' },
+          display: 'Top',
+          line: 2,
+          people: [
+            { userId: 1084, logon: 'bohdan@x.io', displayName: 'Bohdan Pavlenko', region: 'AET' },
+          ],
+          before: [{ region: 'AET', name: 'Anjelica Farber' }],
+        },
+      ],
+    }),
+  });
+
+  assert.equal(summary.outcomes[0]?.result, 'ok');
+  assert.match(summary.outcomes[0]?.detail ?? '', /Anjelica Farber.*still set/);
+});
+
+test('a regional write that took cleanly says nothing extra', async () => {
+  const h = harness({
+    groupChampions: async () => ({
+      primary: null,
+      regional: [{ userId: 1084, name: 'Bohdan Pavlenko', region: 'aet' }],
+      regionalEnabled: true,
+    }),
+  });
+
+  const summary = await runPlan(h.gateway, journal(), {
+    championPlan: championPlan({
+      regional: [
+        {
+          key: 'top',
+          target: { kind: 'existing', uniqueId: 'g-top' },
+          display: 'Top',
+          line: 2,
+          people: [
+            { userId: 1084, logon: 'bohdan@x.io', displayName: 'Bohdan Pavlenko', region: 'AET' },
+          ],
+          before: [],
+        },
+      ],
+    }),
+  });
+
+  assert.equal(summary.outcomes[0]?.detail, '');
 });

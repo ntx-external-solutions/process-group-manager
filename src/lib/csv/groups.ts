@@ -9,6 +9,12 @@
  * row number and say what to do, not what went wrong internally.
  */
 
+import {
+  parseChampionCell,
+  parseRegionalCell,
+  type ChampionCell,
+  type RegionalCell,
+} from './champions.ts';
 import { detectGroupLayout, type GroupCsvLayout } from './layout.ts';
 import { isBlankRow, parseCsv } from './parse.ts';
 import {
@@ -36,6 +42,13 @@ export interface GroupCsvRow {
    * right one for rows someone typed by hand.
    */
   uniqueId: string | null;
+  /**
+   * The primary champion this row asks for. `null` means the cell was blank, which
+   * leaves the group's champion alone; `'clear'` means remove it.
+   */
+  champion: ChampionCell;
+  /** Likewise for regional champions. A list is the complete set for the group. */
+  regionalChampions: RegionalCell;
 }
 
 export interface GroupCsvResult {
@@ -81,11 +94,19 @@ export function parseGroupCsv(text: string): GroupCsvResult {
       continue;
     }
 
+    const champions = readChampions(cells, layout, line);
+    if (!champions.ok) {
+      errors.push({ line, message: champions.error });
+      continue;
+    }
+
     const row: GroupCsvRow = {
       line,
       segments: parsed.value,
       display: displayPath(parsed.value),
       uniqueId: id.value,
+      champion: champions.value.champion,
+      regionalChampions: champions.value.regional,
     };
 
     if (row.uniqueId !== null) {
@@ -172,6 +193,36 @@ function readId(
   return { ok: true, value: id };
 }
 
+/**
+ * Read the two champion cells.
+ *
+ * Errors here stop the row rather than being downgraded to warnings: a champion cell
+ * that cannot be read is one where somebody meant to grant access to a named person,
+ * and the alternative to reporting it is quietly not granting it.
+ */
+function readChampions(
+  cells: readonly string[],
+  layout: GroupCsvLayout,
+  line: number,
+): Parsed<{ champion: ChampionCell; regional: RegionalCell }> {
+  let champion: ChampionCell = null;
+  let regional: RegionalCell = null;
+
+  if (layout.championColumn !== null) {
+    const parsed = parseChampionCell(cells[layout.championColumn] ?? '');
+    if (!parsed.ok) return { ok: false, error: `Row ${line}: ${parsed.error}` };
+    champion = parsed.value;
+  }
+
+  if (layout.regionalChampionColumn !== null) {
+    const parsed = parseRegionalCell(cells[layout.regionalChampionColumn] ?? '');
+    if (!parsed.ok) return { ok: false, error: `Row ${line}: ${parsed.error}` };
+    regional = parsed.value;
+  }
+
+  return { ok: true, value: { champion, regional } };
+}
+
 /** One column per level: the whole path is spelled out across the row. */
 function readColumns(
   cells: readonly string[],
@@ -179,8 +230,9 @@ function readColumns(
   line: number,
   warnings: CsvIssue[],
 ): Parsed<string[]> {
+  const named = new Set([layout.idColumn, layout.championColumn, layout.regionalChampionColumn]);
   const extra = cells.filter(
-    (cell, i) => cell.trim() !== '' && i !== layout.idColumn && !layout.nameColumns.includes(i),
+    (cell, i) => cell.trim() !== '' && !named.has(i) && !layout.nameColumns.includes(i),
   );
   if (extra.length > 0) {
     // Silently ignoring these would drop the deepest levels of the path.
@@ -239,7 +291,10 @@ function readPath(
   layout: GroupCsvLayout,
   line: number,
 ): Parsed<string[]> {
-  const pathCells = cells.filter((_, i) => i !== layout.idColumn);
+  // Champion columns hold people, not levels. Counting them as path cells would read a
+  // perfectly good one-level file as somebody typing commas where they meant pipes.
+  const named = new Set([layout.idColumn, layout.championColumn, layout.regionalChampionColumn]);
+  const pathCells = cells.filter((_, i) => !named.has(i));
   const populated = pathCells.filter((c) => c.trim() !== '');
 
   if (populated.length > 1) {

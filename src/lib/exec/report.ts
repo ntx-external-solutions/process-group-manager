@@ -11,14 +11,16 @@
  */
 
 import { toCsv } from '../csv/parse.ts';
+import type { ChampionPlan } from '../plan/championPlan.ts';
 import type { GroupPlan } from '../plan/groupPlan.ts';
 import type { ShortcutPlan } from '../plan/shortcutPlan.ts';
-import type { Outcome } from './runner.ts';
+import { ACTION_CHAMPION, type Outcome } from './runner.ts';
 
 export interface ReportInput {
   outcomes: readonly Outcome[];
   /** Rows the planner refused. They belong in the report as much as the rest. */
   groupPlan?: GroupPlan | null | undefined;
+  championPlan?: ChampionPlan | null | undefined;
   shortcutPlan?: ShortcutPlan | null | undefined;
 }
 
@@ -48,6 +50,23 @@ export function blockedOutcomes(input: ReportInput): Outcome[] {
       // The planner refuses a row before it has decided what the row would have done,
       // so this is "the group step for this row", not a claim that it was a create.
       action: 'group',
+      result: 'blocked',
+      before: '',
+      after: '',
+      detail: issue.message,
+      line: issue.line,
+    });
+  }
+
+  // A champion the planner could not resolve is the one refusal that leaves the rest of
+  // its row applied — the group is still created — so it has to appear somewhere, or the
+  // report says a file succeeded when nobody got the access it granted.
+  for (const issue of input.championPlan?.blocked ?? []) {
+    out.push({
+      type: 'group',
+      target: issue.display,
+      targetId: null,
+      action: ACTION_CHAMPION,
       result: 'blocked',
       before: '',
       after: '',

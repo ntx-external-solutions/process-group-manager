@@ -9,6 +9,12 @@
  */
 
 import { toCsv } from '../csv/parse.ts';
+import {
+  isNoOp as championPlanIsNoOp,
+  type ChampionPlan,
+  type PrimaryChampionAction,
+  type RegionalChampionAction,
+} from '../plan/championPlan.ts';
 import { isNoOp, type CreateParent, type GroupPlan, type PlanIssue } from '../plan/groupPlan.ts';
 import type {
   ResolvedGroup,
@@ -153,6 +159,109 @@ export function groupPreviewToCsv(preview: GroupPreview): string {
   for (const b of preview.blocked) {
     rows.push(['Blocked', b.display, '', b.message, String(b.line)]);
   }
+  return toCsv(rows);
+}
+
+// ---------------------------------------------------------- champion plan
+
+export interface ChampionPreviewRow {
+  display: string;
+  line: number;
+  /** Who ends up holding it. "nobody" when the row removes the champion. */
+  after: string;
+  /** Who holds it now, or null when the group is new or has nobody. */
+  before: string | null;
+  /** The group does not exist yet, so there is nothing being displaced. */
+  isNew: boolean;
+}
+
+export interface ChampionPreview {
+  primary: ChampionPreviewRow[];
+  regional: ChampionPreviewRow[];
+  unchanged: number;
+  blocked: PlanIssue[];
+  warnings: PlanIssue[];
+  /** Champions being taken away — the half of this that cannot be undone by re-running. */
+  removals: number;
+  isNoOp: boolean;
+}
+
+function primaryRow(action: PrimaryChampionAction): ChampionPreviewRow {
+  return {
+    display: action.display,
+    line: action.line,
+    after:
+      action.person === null
+        ? 'nobody'
+        : `${action.person.displayName} (${action.person.logon})`,
+    before: action.before,
+    isNew: action.target.kind === 'planned',
+  };
+}
+
+function regionalRow(action: RegionalChampionAction): ChampionPreviewRow {
+  return {
+    display: action.display,
+    line: action.line,
+    after:
+      action.people.length === 0
+        ? 'nobody'
+        : action.people.map((p) => `${p.region}: ${p.displayName}`).join('; '),
+    // Shown even when it is the same list plus one, because this write replaces rather
+    // than adds: everybody currently holding it is being re-stated or dropped.
+    before:
+      action.before.length === 0
+        ? null
+        : action.before.map((entry) => `${entry.region}: ${entry.name}`).join('; '),
+    isNew: action.target.kind === 'planned',
+  };
+}
+
+export function buildChampionPreview(plan: ChampionPlan): ChampionPreview {
+  const byLine = (a: { line: number }, b: { line: number }): number => a.line - b.line;
+
+  const primary = plan.primary.map(primaryRow).sort(byLine);
+  const regional = plan.regional.map(regionalRow).sort(byLine);
+
+  // A champion who holds it today and is not in the file's list loses the group. That is
+  // the number worth counting separately: everything else here is additive.
+  const removals =
+    plan.primary.filter((a) => a.person === null && a.before !== null).length +
+    plan.regional.filter((a) => a.before.length > 0).length;
+
+  return {
+    primary,
+    regional,
+    unchanged: plan.unchanged,
+    blocked: plan.blocked,
+    warnings: plan.warnings,
+    removals,
+    isNoOp: championPlanIsNoOp(plan),
+  };
+}
+
+export function championPreviewToCsv(preview: ChampionPreview): string {
+  const rows: string[][] = [['Action', 'Group Path', 'Now', 'After', 'CSV Row']];
+
+  for (const row of preview.primary) {
+    rows.push(['Champion', row.display, row.before ?? (row.isNew ? '(new group)' : 'nobody'), row.after, String(row.line)]);
+  }
+  for (const row of preview.regional) {
+    rows.push([
+      'Regional champions',
+      row.display,
+      row.before ?? (row.isNew ? '(new group)' : 'nobody'),
+      row.after,
+      String(row.line),
+    ]);
+  }
+  for (const issue of preview.blocked) {
+    rows.push(['Blocked', issue.display, '', issue.message, String(issue.line)]);
+  }
+  for (const issue of preview.warnings) {
+    rows.push(['Warning', issue.display, '', issue.message, String(issue.line)]);
+  }
+
   return toCsv(rows);
 }
 

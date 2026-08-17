@@ -63,6 +63,8 @@ export interface RenameAction {
   uniqueId: string;
   /** Where the group is now, for the operator to recognise it by. */
   fromDisplay: string;
+  /** The group's current parent, so the rename can be re-checked against that level. */
+  fromParentUniqueId: string | null;
   from: string;
   to: string;
   line: number;
@@ -294,6 +296,7 @@ function planRestructure(
       renames.push({
         uniqueId: node.uniqueId,
         fromDisplay,
+        fromParentUniqueId: node.parentUniqueId,
         from: node.title,
         to: wantedName,
         line: row.line,

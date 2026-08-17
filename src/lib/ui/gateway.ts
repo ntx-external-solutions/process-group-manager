@@ -8,7 +8,9 @@
  */
 
 import type { ExecGateway, SetShortcutsOutput } from '../exec/runner.ts';
+import type { GroupChampions } from '../pm/champions.ts';
 import type { GroupViewerCount, ReorderResponse } from '../pm/groups.ts';
+import type { DirectoryUser } from '../pm/scim.ts';
 import type { PlanGateway } from '../plan/orchestrate.ts';
 import type { Operation, ProcessSummary } from '../pm/operations.ts';
 import type {
@@ -72,6 +74,11 @@ export function browserGateway(): PlanGateway {
     processSummary: (processUniqueId) =>
       callPm<ProcessSummary>({ op: 'process.summary', processUniqueId }),
     groupViewers: (groupIds) => callPm<GroupViewerCount[]>({ op: 'groups.viewers', groupIds }),
+    // The SCIM key travels with the call and is held nowhere: not in the session cookie,
+    // not on the server, not in browser storage. It lives in the tab and dies with it.
+    usersDirectory: (scimApiKey) => callPm<DirectoryUser[]>({ op: 'users.directory', scimApiKey }),
+    groupChampions: (groupUniqueId) =>
+      callPm<GroupChampions>({ op: 'groups.champions', groupUniqueId }),
   };
 }
 
@@ -113,6 +120,12 @@ export function browserExecGateway(): ExecGateway {
         (item) => item.itemType === 'group' || item.itemType === 'documentgroup',
       );
     },
+    setPrimaryChampion: (groupUniqueId, championId) =>
+      callPm({ op: 'groups.champions.setPrimary', groupUniqueId, championId }),
+    setRegionalChampions: (groupUniqueId, champions) =>
+      callPm({ op: 'groups.champions.setRegional', groupUniqueId, champions: [...champions] }),
+    groupChampions: (groupUniqueId) =>
+      callPm<GroupChampions>({ op: 'groups.champions', groupUniqueId }),
   };
 }
 

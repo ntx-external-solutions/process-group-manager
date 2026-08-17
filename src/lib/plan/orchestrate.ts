@@ -11,9 +11,17 @@
 import { displayPath } from '../csv/path.ts';
 import type { GroupCsvRow } from '../csv/groups.ts';
 import { isNoInstruction, type ShortcutCsvProcess } from '../csv/shortcuts.ts';
+import type { GroupChampions } from '../pm/champions.ts';
 import type { GroupViewerCount } from '../pm/groups.ts';
 import type { ProcessSummary } from '../pm/operations.ts';
+import { indexUsersByLogon, type DirectoryUser } from '../pm/scim.ts';
 import type { ChildTreeItemsResponse } from '../pm/types.ts';
+import {
+  championLookupIds,
+  planChampions,
+  type ChampionPlan,
+  type ChampionPlanDeps,
+} from './championPlan.ts';
 import { describeVisibility, viewerLookupIds, type VisibilityReport } from './visibility.ts';
 import { addLevel, allGroups, emptyTree, type GroupTree } from './tree.ts';
 import { planGroups, type GroupPlan } from './groupPlan.ts';
@@ -33,10 +41,18 @@ export interface PlanGateway {
   processSummary(processUniqueId: string): Promise<ProcessSummary>;
   /** Batch viewer counts, for the visibility impact of a move. */
   groupViewers(groupIds: number[]): Promise<GroupViewerCount[]>;
+  /** The tenant's users, over SCIM. Only called when a file names champions. */
+  usersDirectory(scimApiKey: string): Promise<DirectoryUser[]>;
+  /** A group's champions today, primary and regional. */
+  groupChampions(groupUniqueId: string): Promise<GroupChampions>;
 }
 
 export interface Progress {
-  (event: { phase: 'tree' | 'processes'; done: number; total: number | null }): void;
+  (event: {
+    phase: 'tree' | 'processes' | 'champions';
+    done: number;
+    total: number | null;
+  }): void;
 }
 
 /**
@@ -100,7 +116,9 @@ export async function loadWholeTree(
   gateway: PlanGateway,
   options: { onProgress?: Progress; concurrency?: number; maxGroups?: number } = {},
 ): Promise<GroupTree> {
-  const concurrency = Math.max(1, options.concurrency ?? 6);
+  // The tree endpoint is a cheap read and the tenant's own client fans out harder than
+  // this. The cap on wall-clock here is the number of levels, not the request rate.
+  const concurrency = Math.max(1, options.concurrency ?? 12);
   const maxGroups = options.maxGroups ?? 5_000;
 
   const tree = await loadRootTree(gateway);
@@ -149,14 +167,24 @@ export async function buildGroupPlan(
   gateway: PlanGateway,
   rows: readonly GroupCsvRow[],
   onProgress?: Progress,
+  options: {
+    /**
+     * A tree the caller has already read in full — from the cache, usually. Strictly
+     * better than anything this function would load on demand, because no level of it
+     * is unread, so it is used whatever the file looks like.
+     */
+    wholeTree?: GroupTree | undefined;
+  } = {},
 ): Promise<GroupPlanResult> {
   // A file carrying ids can ask for a group to move, and a group's *current* parent is
   // unknowable without having seen it. Loading only the branches the file names would
   // leave a group that has been moved away looking like one that no longer exists.
-  if (rows.some((row) => row.uniqueId !== null)) {
-    const tree = await loadWholeTree(gateway, {
-      ...(onProgress ? { onProgress } : {}),
-    });
+  if (options.wholeTree || rows.some((row) => row.uniqueId !== null)) {
+    const tree =
+      options.wholeTree ??
+      (await loadWholeTree(gateway, {
+        ...(onProgress ? { onProgress } : {}),
+      }));
     const outcome = planGroups(tree, rows);
     if (outcome.status === 'ok') return { plan: outcome.plan, tree };
     // Nothing is left to load, so a request for more is a bug rather than a state to
@@ -194,6 +222,83 @@ export async function buildGroupPlan(
     `Gave up loading the group tree after ${MAX_PASSES} passes. ` +
       `This usually means a group path is far deeper than expected.`,
   );
+}
+
+export interface ChampionPlanResult {
+  plan: ChampionPlan;
+  /** Groups whose current champions could not be read, keyed by group id. */
+  unreadable: Array<{ uniqueId: string; message: string }>;
+}
+
+/**
+ * Read the directory and the current champions, then plan.
+ *
+ * Two kinds of read, both bounded by the file rather than the tenant: the user directory
+ * once (a handful of SCIM pages), and the champions of each *existing* group the file
+ * names — one group, not one row, so a file that champions the same group on three rows
+ * still reads it once. Groups this run creates are not read at all; they have nobody yet.
+ *
+ * A group whose champions cannot be read is reported and still planned, unconditionally:
+ * losing the "was X" half of an action is worth far less than refusing to set a champion
+ * the operator asked for.
+ */
+export async function buildChampionPlan(
+  gateway: PlanGateway,
+  rows: readonly GroupCsvRow[],
+  groupPlan: GroupPlan,
+  options: {
+    scimApiKey: string;
+    /** Any existing group, used only to ask whether the tenant has regional champions. */
+    probeGroupUniqueId?: string | null | undefined;
+    concurrency?: number | undefined;
+    onProgress?: Progress | undefined;
+  },
+): Promise<ChampionPlanResult> {
+  const concurrency = Math.max(1, options.concurrency ?? 6);
+  const unreadable: ChampionPlanResult['unreadable'] = [];
+
+  const directory = indexUsersByLogon(await gateway.usersDirectory(options.scimApiKey));
+
+  const ids = championLookupIds(rows, groupPlan);
+  const current = new Map<string, GroupChampions>();
+  let done = 0;
+
+  for (let i = 0; i < ids.length; i += concurrency) {
+    const batch = ids.slice(i, i + concurrency);
+    await Promise.all(
+      batch.map(async (uniqueId) => {
+        try {
+          current.set(uniqueId, await gateway.groupChampions(uniqueId));
+        } catch (error) {
+          unreadable.push({ uniqueId, message: (error as Error).message });
+        }
+      }),
+    );
+    done += batch.length;
+    options.onProgress?.({ phase: 'champions', done, total: ids.length });
+  }
+
+  // Whether the feature exists is a tenant setting, and it rides on the primary-champion
+  // response. A file that only creates groups reads no existing ones, so ask about one.
+  let regionalEnabled = [...current.values()].some((entry) => entry.regionalEnabled);
+  if (current.size === 0 && options.probeGroupUniqueId) {
+    try {
+      regionalEnabled = (await gateway.groupChampions(options.probeGroupUniqueId)).regionalEnabled;
+    } catch {
+      // Unknowable, so assume the feature is there: refusing the column on a tenant that
+      // does have it would block a legitimate file, and the write itself would fail
+      // visibly on one that does not.
+      regionalEnabled = true;
+    }
+  }
+
+  const deps: ChampionPlanDeps = {
+    resolveUser: (logon) => directory.get(logon) ?? null,
+    currentOf: (uniqueId) => current.get(uniqueId) ?? null,
+    regionalEnabled,
+  };
+
+  return { plan: planChampions(rows, groupPlan, deps), unreadable };
 }
 
 /**

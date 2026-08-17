@@ -254,6 +254,7 @@ test('a renamed group is drawn under its new name', () => {
       {
         uniqueId: finance.uniqueId,
         fromDisplay: 'Crestan | Finance',
+        fromParentUniqueId: null,
         from: 'Finance',
         to: 'Finance & Legal',
         line: 2,
