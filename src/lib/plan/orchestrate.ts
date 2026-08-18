@@ -247,7 +247,12 @@ export async function buildChampionPlan(
   rows: readonly GroupCsvRow[],
   groupPlan: GroupPlan,
   options: {
-    scimApiKey: string;
+    /**
+     * null where nothing in the file names a logon — a file that only removes champions,
+     * or an export whose champion columns are all blank. The directory is not read then,
+     * so an ordinary group upload never needs a key.
+     */
+    scimApiKey: string | null;
     /** Any existing group, used only to ask whether the tenant has regional champions. */
     probeGroupUniqueId?: string | null | undefined;
     concurrency?: number | undefined;
@@ -257,7 +262,10 @@ export async function buildChampionPlan(
   const concurrency = Math.max(1, options.concurrency ?? 6);
   const unreadable: ChampionPlanResult['unreadable'] = [];
 
-  const directory = indexUsersByLogon(await gateway.usersDirectory(options.scimApiKey));
+  const directory =
+    options.scimApiKey === null
+      ? new Map()
+      : indexUsersByLogon(await gateway.usersDirectory(options.scimApiKey));
 
   const ids = championLookupIds(rows, groupPlan);
   const current = new Map<string, GroupChampions>();

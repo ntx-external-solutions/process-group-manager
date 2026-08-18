@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { parseChampionCell, parseRegionalCell } from './champions.ts';
+import { needsDirectory, parseChampionCell, parseRegionalCell } from './champions.ts';
 import { parseGroupCsv } from './groups.ts';
 import { detectGroupLayout, hasChampionColumns } from './layout.ts';
 import { parseCsv } from './parse.ts';
@@ -117,4 +117,34 @@ test('champion columns are not mistaken for a level that has overflowed', () => 
   const parsed = parseGroupCsv('Group Unique Id,Level 1,Champion\n,Legal,x@y.io\n');
   assert.deepEqual(parsed.errors, []);
   assert.deepEqual(parsed.rows[0]?.segments, ['Legal']);
+});
+
+// ------------------------------------------------------- when a key is needed
+
+test('an untouched export needs no SCIM key, columns or not', () => {
+  // Every generated file carries the columns now, so asking on the columns alone would
+  // block an ordinary group upload behind a credential, to look up nothing.
+  const parsed = parseGroupCsv(
+    'Group Unique Id,Level 1,Champion,Regional Champions\n,Legal,,\n,Risk,,\n',
+  );
+  assert.deepEqual(parsed.errors, []);
+  assert.equal(needsDirectory(parsed.rows), false);
+});
+
+test('removing a champion needs no key either — CLEAR names nobody', () => {
+  const parsed = parseGroupCsv('Level 1,Champion\nLegal,CLEAR\n');
+  assert.equal(needsDirectory(parsed.rows), false);
+});
+
+test('a named logon is what needs the directory', () => {
+  assert.equal(
+    needsDirectory(parseGroupCsv('Level 1,Champion\nLegal,jonathan@palouse.io\n').rows),
+    true,
+  );
+  assert.equal(
+    needsDirectory(
+      parseGroupCsv('Level 1,Regional Champions\nLegal,"AET: jonathan@palouse.io"\n').rows,
+    ),
+    true,
+  );
 });

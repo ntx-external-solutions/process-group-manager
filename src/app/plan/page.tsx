@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { classifyCsv } from '@/lib/csv/detect.ts';
 import { parseGroupCsv, type CsvIssue } from '@/lib/csv/groups.ts';
+import { needsDirectory } from '@/lib/csv/champions.ts';
 import { hasChampionColumns } from '@/lib/csv/layout.ts';
 import { Journal, loadJournal, sessionJournalStore } from '@/lib/exec/journal.ts';
 import { needsAttention, reportToCsv, summarise, type ReportSummary } from '@/lib/exec/report.ts';
@@ -329,8 +330,12 @@ export default function PlanPage() {
     // Champions are named by logon and assigned by user id, and only SCIM bridges the
     // two. Park the file rather than planning half of it: a preview that silently
     // omitted the champion columns would be approved as though it covered them.
+    //
+    // Asked on the *contents*, not on the columns. Every generated file carries the
+    // columns now, so asking on those would demand a key to re-upload an untouched
+    // export — and `CLEAR` names nobody, so removing a champion needs no key either.
     const wantsChampions = hasChampionColumns(parsed.layout);
-    if (wantsChampions && key === null) {
+    if (wantsChampions && needsDirectory(parsed.rows) && key === null) {
       setAwaitingKey(text);
       return;
     }
@@ -357,10 +362,10 @@ export default function PlanPage() {
     setGroupPreview(buildGroupPreview(plan));
     setGroupPlan(plan);
 
-    if (wantsChampions && key !== null) {
+    if (wantsChampions) {
       setBusy('Reading the users and the current champions…');
       const champions = await buildChampionPlan(gateway, parsed.rows, plan, {
-        scimApiKey: key,
+        scimApiKey: needsDirectory(parsed.rows) ? key : null,
         probeGroupUniqueId: tree.roots[0]?.uniqueId ?? null,
         onProgress: (event) =>
           setBusy(`Reading the current champions… ${event.done} of ${event.total ?? '?'}`),
